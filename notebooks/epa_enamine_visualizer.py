@@ -91,7 +91,7 @@ def plot_model_scores(
         )
         for s_name, s_func in score_tups:
             for g_name, g_df in grouper:
-                score_ser = g_df.copy()
+                score_ser = g_df[group_cols].copy()
                 long_score = scoring.score_long_form(
                     s_func, long_form["predict"], data_cols="predict", true_col="True"
                 )
