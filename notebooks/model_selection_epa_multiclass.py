@@ -7,10 +7,11 @@ from functools import partial
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import sklearn
 from sklearn import clone
+from sklearn.base import is_classifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import (
     balanced_accuracy_score,
     make_scorer,
@@ -28,9 +29,10 @@ from sklearn.model_selection import (
 )
 from sklearn.utils.validation import _check_y
 
+import cv_tools
 import samples
 import scoring
-from correlation_filter import get_correlations, get_weighted_correlations
+import scoring_metrics
 from dataset_creation import (
     _set_paths,
     assemble_dataset,
@@ -38,13 +40,28 @@ from dataset_creation import (
     preprocess_data,
 )
 from epa_enamine_visualizer import plot_clf_model_displays, plot_model_scores
-from ForwardFuzzyCoclustering import (
-    select_subsets_from_model,
-)
+from fuzzy_controller import select_subsets_from_model
 from scoring_metrics import get_confusion_weights
 
 
 def optimize_tree(feature_df, labels, model, scoring, cv, path_dict):
+    """
+    forest_params = {
+        "bootstrap": ["False"],
+        "n_estimators": [10, 50, 100, 250],
+        "min_impurity_decrease": [0, 0.0005, 0.001, 0.005, 0.01],
+        "max_features": [3, 5, 6, 7, 9, None],
+        "max_leaf_nodes": [100, 150, 200, 250, None],
+        "random_state": [0],
+    }
+        gscv = GridSearchCV(
+            m,
+            param_grid=forest_params,
+            scoring=make_scorer(matthew_correlation_coeff),
+            n_jobs=-1,
+            cv=RepeatedStratifiedKFold,
+        )
+    """
     optimum_path = "{}optimal_params.csv".format(path_dict["exp_dir"])
     all_param_path = "{}hyperparam_results.csv".format(path_dict["exp_dir"])
     hyper_score_path = "{}hyperparam_scores.csv".format(path_dict["exp_dir"])
@@ -121,17 +138,20 @@ def main():
     dataset = "rus_enamine-50"
     frac_enamine = 0.5
     rus = True
-    plot_all_features = False
-    estimator_name = "better_params"
-
+    plot_all_feature_displays = True
+    estimator_name = "parallel_training"
+    n_subsets = 3
+    n_epochs = 3
     (
         data_tuple,
         select_params,
         path_dict,
         estimator,
-        estimator_name,
-        score_tups,
-    ) = setup_params(dataset, frac_enamine, classification, rus, estimator_name)
+    ) = setup_params(
+        dataset, frac_enamine, classification, rus=rus, estimator_name=estimator_name
+    )
+    select_params["n_subsets"] = n_subsets
+    select_params["n_epochs"] = n_epochs
     train_df, train_labels, test_df, test_labels = data_tuple
 
     (
@@ -147,118 +167,92 @@ def main():
     )
     print("Running model in directory: {}".format(path_dict["parent_dir"]))
     # Plot all features model.
-    probs = None
-    if True and classification:
-        booster_path = "{}booster_weights.csv".format(path_dict["exp_dir"])
-        booster, probs = hist_grad_boost(
-            train_df,
-            train_labels,
-            select_params,
-            booster_path,
-            path_dict,
-            plot_all_features,
-            score_tups,
-        )
-    if select_params["sample_weight"] is None:
-        label_corr, cross_corr = get_correlations(
-            feature_df=train_df,
-            labels=train_labels,
-            corr_path=path_dict["corr_path"],
-            xc_path=path_dict["xc_path"],
-            corr_method=select_params["corr_method"],
-            xc_method=select_params["xc_method"],
-            use_disk=True,
-        )
-    else:
-        label_corr, cross_corr = get_weighted_correlations(
-            feature_df=train_df,
-            labels=train_labels,
-            select_params=select_params,
-            subset_dir=path_dict["exp_dir"],
-        )
-    name_model_dict = {estimator_name: estimator}
-    print(name_model_dict.items())
-    print(
+    booster, booster_probs, booster_weights = train_base_model(
+        train_df=train_df,
+        train_labels=train_labels,
+        select_params=select_params,
+        path_dict=path_dict,
+        plot_all_feature_displays=plot_all_feature_displays,
+    )
+
+    select_params["base_weight"] = booster_weights
+    print(estimator_name)
+    logger.debug(
         "Discretized Labels: Value Counts:\n{}".format(
             pprint.pformat(train_labels.value_counts())
         )
     )
-    # Get subsets from training loop
-    prior_probs = [probs]
-    if True:
-        n_subsets = 6
-        model_scores_dict, model_subsets_dict, subset_output_tups, name_weights_dict = (
-            select_subsets_from_model(
-                feature_df=train_df,
-                labels=train_labels,
-                n_subsets=n_subsets,
-                name_model_dict=name_model_dict,
-                label_corr=best_corrs,
-                cross_corr=cross_corr,
-                exp_dir=path_dict["parent_dir"],
-                select_params=select_params,
-                prior_probs=prior_probs,
-            )
-        )
-        # print(subset_output_tups)
-        cv_scores = pd.DataFrame.from_dict(model_scores_dict, orient="index")
-        # print("CV Scores ({})".format([s for s in model_scores_dict.values()]))
-        # print(cv_scores, flush=True)
-        results_dict = dict()
-        plot_dict = dict()
-        for n, m in name_model_dict.items():
-            if False and (
-                len(model_subsets_dict[n]) < 2
-                or isinstance(model_subsets_dict[n], str)
-                or any([len(subset) < 2 for subset in model_subsets_dict[n]])
-            ):
-                print(
-                    "Size of feature set to be plotted: {}".format(
-                        len(model_subsets_dict[n])
-                    )
-                )
-                continue
-            plot_selections(
-                train_df,
-                train_labels,
-                select_params,
-                n,
-                path_dict,
-                score_tups,
-                results_dict,
-                model_subsets_dict,
-                name_model_dict,
-                plot_dict,
-            )
-    else:
-        model_subsets_dict = dict.fromkeys(
-            name_model_dict.keys(), train_df.columns.tolist()
-        )
-        model_scores_dict = dict.fromkeys(
-            name_model_dict.keys(), train_df.columns.tolist()
-        )
-    # ("Confusion Matrix", ConfusionMatrixDisplay.from_estimator), ("Det", DetCurveDisplay.from_estimator), ("ROC", RocCurveDisplay.from_estimator))
-    score_tup_dict = dict([(k[0], dict()) for k in score_tups])
-    # results_dict = {"Feature Selection": list(), "Randomized Label": score_tup_dict}
-    # results_dict = dict().fromkeys(name_model_dict.keys(), score_tup_dict) # {"Feature Selection": list(), "Randomized Label": score_tup_dict}
+    search_features = train_df.columns.tolist()
+    logger.debug("Selecting from {} features.".format(len(search_features)))
+    model_dir = path_dict["exp_dir"]
+    os.makedirs(model_dir, exist_ok=True)
 
+    # scores, subsets, outputs, weights =
+    select_subsets_from_model(
+        feature_df=train_df,
+        labels=train_labels,
+        select_params=select_params,
+        estimator=estimator,
+        estimator_name=estimator_name,
+        model_dir=model_dir,
+        path_dict=path_dict,
+    )
+    exit()
+    """
+    if False and (
+        len(subsets) < 2
+        or isinstance(subsets, str)
+        or any([len(subset) < 2 for subset in subsets])
+    ):
+        print("Size of feature set to be plotted: {}".format(len(subsets)))
+        plot_models(
+            feature_df=train_df,
+            labels=train_labels,
+            select_params=select_params,
+            estimator_name=estimator_name,
+            estimator=estimator,
+            path_dict=path_dict,
+            score_tups=score_tups,
+            subsets_list=subsets,
+            save_path="{}subset_scores.png".format(path_dict["exp_dir"]),
+        )
     return (
         (train_df, test_df),
         (train_labels, test_labels),
-        model_subsets_dict,
-        model_scores_dict,
-    )
+        subsets,
+        scores,)
+        """
 
 
-def hist_grad_boost(
+def train_base_model(
     train_df,
     train_labels,
     select_params,
-    booster_path,
     path_dict,
-    plot_all_features,
-    score_tups,
+    plot_all_feature_displays,
+    weighted_booster=True,
 ):
+    """
+
+    Parameters
+    ----------
+    weighted_booster
+    train_df : pd.DataFrame
+    train_labels : pd.Series
+    select_params : dict
+    path_dict : dict
+    plot_all_feature_displays : bool
+
+    Returns
+    -------
+    booster : estimator
+    Gradient Booster with parameters used. Untrained due to cross-validation.
+    probs : pd.Series | pd.DataFrame
+    CV test output predictions from trained booster
+    booster_weights : pd.Series
+    Sample weights assigned based on booster output predictions
+    """
+
     """
     best_estimator = optimize_tree(
         train_df,
@@ -269,31 +263,119 @@ def hist_grad_boost(
         path_dict,
     )
     """
+    from sklearn.ensemble import ExtraTreesClassifier, AdaBoostClassifier
+
     # Set initial sample weights to SAMME weights from boosting.
     custom = False
-    booster_params = {
-        "max_iter": 500,
-        "max_bins": 100,
-        "max_features": 0.5,
-        "class_weight": "balanced",
-        "n_iter_no_change": 10,
-        "learning_rate": 0.025,
-    }
-    booster = HistGradientBoostingClassifier(
-        # l2_regularization=0.025,
-        # max_depth=7,
-        #  verbose=1,
-        # scoring=brier_score_loss,
-    )
-    booster.set_params(**booster_params)
-    probs_list = list()
-    if os.path.isfile(booster_path):
-        probs = pd.read_csv(booster_path, index_col="INCHI_KEY").squeeze()
-        select_params["sample_weight"] = samples.weight_by_proba(
-            train_labels, probs, prob_thresholds=select_params["brier_clips"]
+    booster_name = "extra"
+    booster_weight_path = "{}booster_weights.csv".format(path_dict["exp_dir"])
+    booster_prob_path = "{}booster_probs.csv".format(path_dict["exp_dir"])
+    booster_model = "{}booster_model.pkl".format(path_dict["exp_dir"])
+    if booster_name == "hist_grad":
+        booster_params = {
+            "max_iter": 100,
+            "max_depth": 5,
+            "max_bins": 100,
+            "min_samples_leaf": 2,
+            # "max_features": 0.5,
+            "class_weight": "balanced",
+            "n_iter_no_change": 10,
+            "tol": 1e-6,
+            "learning_rate": 0.05,
+        }
+        booster = HistGradientBoostingClassifier(
+            # l2_regularization=0.025,
+            # max_depth=7,
+            #  verbose=1,
         )
+        booster.set_params(**booster_params)
+    elif booster_name == "ada_extra":
+        extra = ExtraTreesClassifier()
+        extra_params = {
+            # "min_samples_split": 10,
+            "max_depth": 3,
+            # "min_impurity_decrease": 0.05,
+            "max_leaf_nodes": 25,
+            "class_weight": "balanced",
+            "n_jobs": -4,
+        }
+        extra.set_params(**extra_params)
+        booster = AdaBoostClassifier(extra, n_estimators=5, learning_rate=0.025)
+    elif booster_name == "extra":
+        extra_params = {
+            "n_estimators": 5000,
+            "max_depth": 6,
+            # "min_impurity_decrease": 0.05,
+            "max_leaf_nodes": 25,
+            # "max_features": "log2",
+            "class_weight": "balanced",
+            "n_jobs": -2,
+        }
+        extra = ExtraTreesClassifier()
+        extra.set_params(**extra_params)
+        booster = extra
+    else:
+        booster = None
+        booster_weights = None
+    if (
+        False
+        and os.path.isfile(booster_weight_path)
+        and os.path.isfile(booster_prob_path)
+    ):
+        probs = pd.read_csv(booster_prob_path)
+        booster_weights = pd.read_csv(booster_weight_path).squeeze()
+        # samples.weight_by_proba(train_labels, probs, prob_thresholds=select_params["brier_clips"])
     elif True:
-        if custom:
+        if weighted_booster and booster is not None and booster_name != "extra":
+            onehot = pd.concat([1 - train_labels, train_labels], axis=1)
+            cv_list, staged_df_list = list(), list()
+            for dev_X, dev_y, eval_X, eval_y in cv_tools.split_df(
+                train_df, train_labels
+            ):
+                staged_list, con_list = list(), list()
+                onehot_test = onehot.loc[eval_y.index]
+                booster.fit(X=dev_X, y=dev_y)
+                if booster_name != "extra":
+                    for stage_i, stage_est in enumerate(booster.estimators_):
+                        booster_probs = stage_est.predict_proba(X=eval_X)
+                        pred_df = pd.DataFrame(booster_probs, index=eval_X.index)
+                        staged_list.append(pred_df.mul(onehot_test.sum(axis=1)))
+                    # print(booster_probs)
+                    # print(staged_list)
+                    staged_df_list.append(pd.concat(staged_list))
+                    con_list.append(
+                        pd.DataFrame(
+                            booster.predict_proba(X=eval_X), index=eval_X.index
+                        )
+                    )
+                else:
+                    staged_df_list.append(
+                        pd.DataFrame(
+                            booster.predict_proba(X=eval_X), index=eval_X.index
+                        )
+                    )
+            print(staged_df_list)
+            staged_df = pd.concat(staged_df_list)
+            print(staged_df)
+            prob_dist_list = [a[1] for a in staged_df.items()]
+            fig_path = "{}base_model_prob_distance_heatmap.png".format(
+                path_dict["exp_dir"]
+            )
+            plot_prob_dist_heatmap(
+                prob_dist_list, fig_path, include_thresholds=(0.0, None)
+            )
+
+            i_list = np.arange(staged_df.shape[1])
+            if booster_name == "extra":
+                probs = staged_df
+            else:
+                weight_ser = 1 / pd.Series(
+                    [booster.learning_rate * np.log2(w + 3) for w in i_list]
+                )
+                probs = staged_df.mul(weight_ser).sum(axis=1).div(weight_ser.sum())
+                assert staged_df.shape[1] == weight_ser.shape[0]
+                assert staged_df.shape[0] == train_labels.shape[0]
+        elif custom:
             results, score_dict, long_form, test_idx_list, score_dict = (
                 scoring.cv_model_generalized(
                     booster,
@@ -307,7 +389,7 @@ def hist_grad_boost(
             probs = pd.concat(results["predict_proba"]["test"])
         else:
             probs = cross_val_predict(
-                booster,
+                estimator=booster,
                 X=train_df,
                 y=train_labels,
                 method="predict_proba",
@@ -316,17 +398,17 @@ def hist_grad_boost(
                 params=None,
             )
             probs = pd.DataFrame(probs, index=train_labels.index)
-        print("HGB Probabilities: {}".format(probs))
-        select_params["sample_weight"] = samples.weight_by_proba(
+        # print("HGB Probabilities: {}".format(probs))
+        assert probs.shape[0] == train_labels.shape[0]
+        booster_weights = samples.weight_by_proba(
             y_true=train_labels,
             probs=probs,
             prob_thresholds=select_params["brier_clips"],
         )
-        probs.to_csv(booster_path, index_label="INCHI_KEY")
-        # print(booster.n_iter_)
-        # print(booster.validation_score_)
-    if plot_all_features:
-        display_dir = "{}all_features/".format(path_dict["exp_dir"])
+        probs.to_csv(booster_prob_path, index_label="INCHI_KEY")
+
+    if plot_all_feature_displays:
+        display_dir = "{}base_model/".format(path_dict["exp_dir"])
         os.makedirs(display_dir, exist_ok=True)
         subsets = tuple(
             [
@@ -338,36 +420,72 @@ def hist_grad_boost(
         score_results, score_plot = plot_model_scores(
             feature_df=train_df,
             train_labels=train_labels,
-            score_tups=score_tups,
-            estimator=booster,
+            score_tups=select_params["score_tups"],
+            estimator_list=[booster],
             subsets=subsets,
             cv=select_params["cv"],
-            # sample_weight=select_params["sample_weight"],
         )
-        score_plot.savefig("{}all_features_score.png".format(display_dir))
+        score_plot.savefig("{}base_model_scores.png".format(display_dir))
         all_feat_displays = plot_clf_model_displays(
             estimator=booster,
-            estimator_name="HistGradBoost",
+            estimator_name=booster_name,
             train_df=train_df,
             train_labels=train_labels,
             select_params=select_params,
             subset_dir=display_dir,
             display_labels=["Insoluble", "Soluble"],
-            sample_weight=select_params["sample_weight"],
+            # sample_weight=booster_weights,
             probs=probs,
         )
-    return booster, probs
+        plt.close()
+    return booster, probs, booster_weights
 
 
-def setup_params(dataset_name, frac_enamine, classification, rus, estimator_name):
-    if classification:
-        # Keep score_func at predict_proba. This only affects how selection weights samples.
+def plot_prob_dist_heatmap(
+    prob_dist_list,
+    save_path=None,
+    symmetric=False,
+    sample_weight=None,
+    dist_metric=root_mean_squared_log_error,
+    include_thresholds=None,
+):
+    """
+
+    Parameters
+    ----------
+    include_thresholds
+    dist_metric
+    prob_dist_list : list[pd.Series]
+    List of correct-class probabilities.
+    save_path : str
+    symmetric : bool
+    sample_weight : pd.Series
+    """
+    prob_distances = scoring_metrics.model_prediction_distance(
+        predicts_list=prob_dist_list,
+        metric=dist_metric,
+        symmetric=symmetric,
+        sample_weight=sample_weight,
+        include_thresholds=include_thresholds,
+    )
+    plt.figure(figsize=(12, 8), dpi=300)
+    dist_plot = sns.heatmap(
+        prob_distances,
+        square=True,
+        robust=True,
+        yticklabels=False,
+        cmap="coolwarm",
+    )
+    plt.savefig(save_path)
+    plt.close()
+
+
+def setup_params(dataset_name, frac_enamine, estimator, rus, estimator_name):
+    if True or is_classifier(estimator):
+        # Keep score_func at predict_proba. This only affects how selection weight samples.
         # Plotting, etc is handled by scoring function signature.
-        select_params = _set_params(
-            score_func=balanced_accuracy_score,
-            score_name="balanced_accuracy",
-            response_method="predict_proba",
-            greater_is_better=True,
+        select_params, estimator = _set_params(
+            score_func=balanced_accuracy_score, score_name="balanced_accuracy"
         )
         # Model scoring metrics.
         select_params["cv"] = partial(
@@ -378,40 +496,29 @@ def setup_params(dataset_name, frac_enamine, classification, rus, estimator_name
             # n_repeats=3,
             random_state=0,
         )
-        score_tups = (
+        select_params["score_tups"] = (
             ("MCC", matthews_corrcoef),
             ("Balanced Acc", balanced_accuracy_score),
             # ("Brier Loss", brier_score_loss),
         )
-        estimator = RandomForestClassifier(
-            n_estimators=50,
-            class_weight="balanced",
-        ).set_params(
-            **{
-                "class_weight": "balanced",
-                # "max_depth": 15,
-                "max_leaf_nodes": None,
-                "min_impurity_decrease": 0.001,
-                "n_jobs": -3,
-            }
-        )
         print(estimator.__repr__())
     else:
-        select_params = _set_params(
+        select_params, estimator = _set_params(
             score_func=partial(
                 root_mean_squared_log_error,
                 multioutput="raw_values",
             ),
             score_name="RMSLE",
-            response_method="predict",
+            model_output="predict",
             greater_is_better=False,
         )
         select_params["cv"] = partial(KFold, shuffle=True, random_state=0)
-        # estimator = HuberRegressor(warm_start=True, max_iter=2500, epsilon=1.2)
-        # estimator_name = "Huber_1_2"
-        estimator = LinearRegression()
-        score_tups = (("r2", r2_score), ("mape", mean_absolute_percentage_error))
-        # search_features = train_df.columns.tolist()
+        # estimator = LinearRegression()
+        # estimator_name = "linear_reg"
+        select_params["score_tups"] = (
+            ("r2", r2_score),
+            ("mape", mean_absolute_percentage_error),
+        )
         # Labels are scikit-learn compatible.
     if "epa" in dataset_name or "enamine" in dataset_name or "dmso" in dataset_name:
         if rus:
@@ -423,7 +530,6 @@ def setup_params(dataset_name, frac_enamine, classification, rus, estimator_name
         train_df, train_labels, test_df, test_labels = assemble_dmso_dataset(
             dataset_name, select_params, path_dict, frac_enamine=frac_enamine, rus=True
         )
-        path_dict["exp_dir"] = parent_dir
     else:
         train_data, test_data, preprocessor, data_dir, parent_dir = assemble_dataset(
             dataset_name
@@ -457,63 +563,13 @@ def setup_params(dataset_name, frac_enamine, classification, rus, estimator_name
         select_params,
         path_dict,
         estimator,
-        estimator_name,
-        score_tups,
     )
-
-
-def plot_selections(
-    feature_df,
-    labels,
-    select_params,
-    model_name,
-    path_dict,
-    score_tups,
-    results_dict,
-    subsets_dict,
-    model_dict,
-    plot_dict,
-):
-
-    for subset_i, subset in enumerate(subsets_dict[model_name]):
-        subset_dir = "{}/subset{}/".format(path_dict["exp_dir"], subset_i)
-        if not os.path.isdir(subset_dir):
-            print("Subset dir not found: {}".format(subset_dir))
-            os.makedirs(subset_dir, exist_ok=True)
-        submodel_name = "{}_{}".format(model_name, subset_i)
-        plots = plot_clf_model_displays(
-            estimator=model_dict[model_name],
-            estimator_name=submodel_name,
-            train_df=feature_df[list(subset)],
-            train_labels=labels,
-            select_params=select_params,
-            subset_dir=subset_dir,
-        )
-        plt.close()
-
-    results_dict[model_name], plot_dict[model_name] = plot_model_scores(
-        feature_df=feature_df,
-        train_labels=labels,
-        score_tups=score_tups,
-        estimator=model_dict[model_name],
-        subsets=subsets_dict[model_name],
-        cv=select_params["cv"],
-        # sample_weight=plot_weights,
-    )
-    # score_plot.figure.set(title="{}".format(model_name), ylabel="Score")
-    print(results_dict[model_name])
-    results_dict[model_name].to_csv(
-        "{}{}results_long-form.csv".format(path_dict["exp_dir"], model_name)
-    )
-    plot_dict[model_name].savefig("{}{}.png".format(path_dict["exp_dir"], model_name))
-    plt.close()
-    # print(pd.DataFrame.from_dict(results_dict, orient="index"))
 
 
 def _set_params(
     score_func=matthews_corrcoef,
     score_name=None,
-    response_method="predict_proba",
+    model_output="predict_proba",
     loss_func=mean_absolute_percentage_error,
     greater_is_better=True,
 ):
@@ -524,7 +580,7 @@ def _set_params(
     ----------
     score_func : callable
     score_name : str
-    response_method : str
+    model_output : str
     loss_func : callab;e
     greater_is_better : bool
 
@@ -541,19 +597,20 @@ def _set_params(
         "loss_func": loss_func,
         "lang_lambda": 0.1,
         # Features In Use
-        "max_trials": 25,
-        "max_features_out": 30,
+        "max_trials": 2,
+        "randomize_init_weights": True,
+        "max_features_out": 20,
         "min_features_out": 10,
         "tol": 0.01,
-        "n_iter_no_change": 10,
+        "n_iter_no_change": 3,
         "corr_method": "spearman",
         "xc_method": "pearson",
         "thresh_reset": 0.05,
         "n_vif_choices": 5,
         "add_n_feats": 3,
         "features_min_vif": 8,
-        "features_min_perm": 20,
-        "features_min_sfs": 12,
+        "features_min_perm": 12,
+        "features_min_sfs": 15,
         "thresh_vif": 30,
         "thresh_perm": 0.025,
         "thresh_sfs": 0,
@@ -563,17 +620,29 @@ def _set_params(
         # "scoring": make_scorer(three_class_solubility),
         "scoring": score_func,
         "scorer": make_scorer(score_func, greater_is_better=greater_is_better),
-        "score_func": response_method,
+        "model_output": model_output,
         "sample_weight": None,
-        "initial_weights": None,
+        "base_weight": None,
         "pos_label": 0,
-        "brier_clips": (0, 1.0),
+        "brier_clips": (0.1, 1.0),
+        "prob_thresholds": (0.0, 0.8),
+        "pred_combine": "best",
     }
     if score_name is None:
         select_params["score_name"] = str(score_func.__repr__())
     else:
         select_params["score_name"] = score_name
-    return select_params
+    estimator = RandomForestClassifier().set_params(
+        **{
+            "n_estimators": 50,
+            "class_weight": "balanced",
+            # "max_depth": 15,
+            "max_leaf_nodes": 100,
+            "min_impurity_decrease": 0.001,
+            "n_jobs": -3,
+        }
+    )
+    return select_params, estimator
 
 
 def _make_proba_residuals(data, labels=None, combine=True):
@@ -587,32 +656,11 @@ def _make_proba_residuals(data, labels=None, combine=True):
 
 
 if __name__ == "__main__":
+    from sklearn import set_config
+
     sklearn.set_config(transform_output="pandas")
-    # balanced_accuracy_score
     logger = logging.getLogger(name="selection")
     with warnings.catch_warnings(record=True) as w:
         # Cause all warnings to always be triggered.
         # warnings.simplefilter("error")
         main_dfs, main_labels, subset_dict, scores_dict = main()
-    """
-    name_model_dict = get_eval_models(scorer=make_scorer(matthews_corrcoef))
-    forest_params = {
-        "bootstrap": ["False"],
-        "n_estimators": [10, 50, 100, 250],
-        "min_impurity_decrease": [0, 0.0005, 0.001, 0.005, 0.01],
-        "max_features": [3, 5, 6, 7, 9, None],
-        "max_leaf_nodes": [100, 150, 200, 250, None],
-        "random_state": [0],
-    }
-    for m, n in name_model_dict.items():
-        gscv = GridSearchCV(
-            m,
-            param_grid=forest_params,
-            scoring=make_scorer(three_class_solubility),
-            n_jobs=-1,
-            cv=RepeatedStratifiedKFold,
-        )
-        gscv.fit(main_dfs[0], main_labels[0])
-        gs_results = gscv.cv_results_
-        print(gs_results)
-        """
