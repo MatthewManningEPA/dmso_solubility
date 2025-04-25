@@ -75,7 +75,30 @@ def load_combo_data(source_label_combos="all"):
     return grouped_df_dict
 
 
+def load_database_2025_dmso(use_cols="auto", meta_path=None):
+    if meta_path is None:
+        meta_path = "{}enamine_chemtrack.csv".format(os.environ.get("DATA_DIR"))
+    if use_cols == "auto":
+        use_cols = [
+            "SOURCE",
+            "DTXSID",
+            "INCHI_KEY",
+            "INCHI_STRING",
+            "SMILES",
+            "QSAR_READY_SMILES",
+        ]
+    if "INCHI_KEY" in use_cols:
+        index_col = "INCHI_KEY"
+    else:
+        index_col = None
+    meta_df = pd.read_csv(meta_path, usecols=use_cols)
+    if "INCHI_KEY" in use_cols:
+        meta_df.set_index(keys=index_col)
+    return meta_df
+
+
 def load_metadata(desc=False):
+    raise DeprecationWarning
     # Returns dictionary {SOURCE_SOLUBILITY: List of Series/DataFrames}
     # Keys: 'epa_sol', 'epa_in', 'en_in', 'en_sol'
     # List values:
