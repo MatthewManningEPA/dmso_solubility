@@ -196,9 +196,7 @@ def score_epa_data(epa_data, train_data, model_score_subset, scoring, n_subsets=
             fit_model = clone(model).set_params(class_weight="balanced")
         else:
             fit_model = clone(model).set_params(scoring=scoring)
-        fit_model.fit(
-            X=train_data[0][cols], y=train_data[1][train_data[0].index].squeeze()
-        )
+        fit_model.fit(,
         train_score = balanced_accuracy_score(
             y_true=train_data[1][train_data[0].index].squeeze(),
             y_pred=fit_model.predict(X=train_data[0][cols]),

@@ -66,7 +66,7 @@ def __init__(self, df=None, options=None, logger=None, *args, **kwargs):
 +        self.cov_mat = None
 +        self.cov_pairs = None
 +        self.desc_groups = None
-+        self.fit()
++        self.fit(,
 +
 +
 

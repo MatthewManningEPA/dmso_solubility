@@ -11,17 +11,18 @@ from sklearn.ensemble import (
 from sklearn.frozen import FrozenEstimator
 # from sklearn.frozen import FrozenEstimator
 from sklearn.linear_model import LinearRegression, LogisticRegressionCV
+from sklearn.metrics import make_scorer, matthews_corrcoef
 from sklearn.model_selection import (
     StratifiedKFold,
 )
 from sklearn.pipeline import clone
 
+import sample_clusters
 from archive.grove_feature_selection import padel_candidate_features
-from ForwardFuzzyCoclustering import (
-    mcc,
-    process_selection_data,
-    select_feature_subset,
-)
+from build_preprocessor import get_standard_preprocessor
+from fuzzy_controller import select_feature_subset
+
+mcc = make_scorer(matthews_corrcoef)
 
 
 def get_clf_model(model_name):
@@ -275,3 +276,31 @@ if __name__ == "__main__":
     logger = logging.getLogger(name="selection")
     for md in ["svc_rbf", "xtra", "ridge", "rfc", "passive", "log"]:
         main(model_name=md, importance_name=importance)
+
+
+def process_selection_data(
+    feature_df=None,
+    labels=None,
+    dropped_dict=None,
+    save_dir=None,
+    select_params=None,
+    scaler="standard",
+    transform=None,
+):
+    raise DeprecationWarning
+    # TODO: Delete function.
+    preloaded = False
+    drop_corr = False
+    best_corrs, cross_corr = None, None
+    if feature_df is None:
+        feature_df, labels = sample_clusters.grab_enamine_data()
+    if dropped_dict is None:
+        dropped_dict = dict()
+    combo_transform, scaler, cross_corr = get_standard_preprocessor(
+        scaler=scaler, transform_func=transform, corr_params=select_params
+    )
+    combo_transform.fit(,
+    with open("{}transformer.pkl".format(save_dir), "wb") as f:
+        pickle.dump(combo_transform, f)
+    train_df = combo_transform.transform(feature_df)
+    return train_df, labels, best_corrs, cross_corr, scaler

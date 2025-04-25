@@ -301,11 +301,7 @@ def brute_force_importance_rf_clf(
     feature_df, labels, clf, n_features_out, step_size=1, **fit_kwargs
 ):
     # Helper function for brute force feature selection.
-    eliminator = (
-        RFE(estimator=clf, n_features_to_select=n_features_out, step=step_size)
-        .set_output(transform="pandas")
-        .fit(feature_df, y=labels, **fit_kwargs)
-    )
+    eliminator = RFE(estimator=clf, n_features_to_select=n_features_out, step=step_size)
     brute_features_rankings = pd.Series(
         eliminator.ranking_, index=feature_df.columns.tolist()
     ).sort_values()

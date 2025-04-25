@@ -352,7 +352,11 @@ def grove_features_loop(
 def process_selection_data(dropped_dict, feature_df, labels, save_dir):
     sample_wts = compute_sample_weight(class_weight="balanced", y=labels)
     scaler = (
-        RobustScaler(unit_variance=True).set_output(transform="pandas").fit(feature_df)
+        RobustScaler(unit_variance=True)
+        .set_output(transform="pandas")
+        .fit(
+            feature_df,
+        )
     )
     if save_dir is not None:
         with open("{}scaler.pkl".format(save_dir), "wb") as f:

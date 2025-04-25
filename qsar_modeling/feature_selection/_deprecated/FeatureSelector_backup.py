@@ -416,7 +416,9 @@ class FeatureSelectorTrainer:
                 df_scaled.update((name, scaler.transform(df)))
             else:
                 if scale_to:
-                    scaler.fit(scale_to)
+                    scaler.fit(
+                        scale_to,
+                    )
                     scaler.transform(df)
                 else:
                     scaler.fit_transform(df)

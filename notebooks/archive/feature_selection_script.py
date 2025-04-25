@@ -217,16 +217,12 @@ def sequential(X_selected, labels, filter_kws, save_dir=None):
             filter_kws["n_feats"]
         )
     )
-    sfs = (
-        SequentialFeatureSelector(
-            estimator=filter_kws["model"],
-            n_features_to_select=filter_kws["n_feats"],
-            direction=filter_kws["direction"],
-            n_jobs=filter_kws["n_jobs"],
-            scoring=filter_kws["scorer"],
-        )
-        .set_output(transform="pandas")
-        .fit(X_selected, labels)
+    sfs = SequentialFeatureSelector(
+        estimator=filter_kws["model"],
+        n_features_to_select=filter_kws["n_feats"],
+        direction=filter_kws["direction"],
+        n_jobs=filter_kws["n_jobs"],
+        scoring=filter_kws["scorer"],
     )
     return pd.Series(sfs.feature_names_in_[sfs.support_])
 

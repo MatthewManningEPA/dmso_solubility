@@ -20,7 +20,7 @@ def get_predictions(
 ):
     if model_params:
         model.set_params(**model_params)
-    model.fit(X=train_data, y=train_labels, sample_weight=sample_wts)
+    model.fit(,
     train_predict = pd.Series(model.predict(X=train_data), index=train_data.index)
     test_predict = pd.Series(model.predict(X=test_data), index=test_data.index)
     train_proba = pd.DataFrame(

@@ -490,9 +490,9 @@ def run_cv_search(fs, use_feats, cv_dir, score_dict):
     )
     #                    jmem=jmem)
     exit()
-    pl.fit(X=X, y=y)
+    pl.fit(,
     print(pl.score(X=X, y=y), flush=True)
-    search.fit(X=X, y=y)
+    search.fit(,
     try:
         with open("{}best_pipeline.html".format(cv_dir), "w") as f:
             f.write(estimator_html_repr(search.best_estimator_))

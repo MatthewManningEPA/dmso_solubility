@@ -22,9 +22,9 @@ from sklearn.model_selection import (
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 
 import build_preprocessor
-import ForwardFuzzyCoclustering
+import fuzzy_controller
 import padel_categorization
-import vapor_pressure_selection
+from archive import vapor_pressure_selection
 from data_cleaning import qsar_readiness
 from dmso_utils.data_tools import get_query_data
 
@@ -449,7 +449,7 @@ def train_multilabel_models(epa_df, epa_labels, epa_scorer, mc_path):
         model_dir = "{}feature_selection_metaestimator_trial/{}/".format(mc_path, n)
         os.makedirs(model_dir, exist_ok=True)
         model_dict, score_dict, dropped_dict, best_features = (
-            ForwardFuzzyCoclustering.select_feature_subset(
+            fuzzy_controller.select_feature_subset(
                 train_df[search_features],
                 train_labels,
                 target_corr=best_corrs,

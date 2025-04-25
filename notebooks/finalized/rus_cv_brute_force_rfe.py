@@ -411,7 +411,7 @@ for i in np.arange(5):
         error_score="raise",
         return_train_score=True,
         verbose=0,
-    ).fit(X=rus_X, y=rus_y)
+    ).fit(,
     pprint.pp(search_party.best_params_)
     pprint.pp(search_party.best_score_)
     clf = search_party.best_estimator_
@@ -569,7 +569,6 @@ for i in [0]:
     best = RandomForestClassifier(max_features=5, max_leaf_nodes=250, min_impurity_decrease=5e-05, n_estimators=100, bootstrap=False, n_jobs=-1)
     fitted = best.fit(rus_X, rus_y)    
     """
-    from sklearn.metrics import DetCurveDisplay
     import matplotlib.pyplot as plt
 
     det_path = "det_curve_rus".format(rus_dir)
@@ -590,7 +589,7 @@ for i in [0]:
     # whole_lcd, _, __ = scoringlearn_curve(best, 'Random Forest (All Data)', shuffle_X, shuffle_y, fname_stub='{}all_data_lc'.format(rus_dir))
     continue
     # cv_model_generalized(best, X=rus_X, y=rus_y, cv_inst=PredefinedSplit(group_folds), score_dir=rus_dir)
-    std_scaler = StandardScaler().fit(rus_X)
+    std_scaler = StandardScaler().fit(rus_X, )
     fit_dev_X = std_scaler.fit_transform(rus_X)
     fit_eva_X = std_scaler.transform(rus_eva_X)
     fig, ax = plt.subplots(figsize=(5, 6), dpi=600)
@@ -642,7 +641,7 @@ for i in [0]:
             )
         )
 
-        std_scaler = StandardScaler().fit(rus_dev_X)
+        std_scaler = StandardScaler().fit(rus_dev_X, )
         continue
         fit_dev_X = std_scaler.transform(rus_dev_X)
         fit_eva_X = std_scaler.transform(rus_eva_X)
