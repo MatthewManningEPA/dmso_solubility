@@ -1,8 +1,10 @@
 from logging import getLogger
+
 import pandas as pd
 from sklearn.decomposition import PCA
-from feature_name_lists import get_features_dict
 from type_check import is_iterable, make_lowercase
+
+from feature_name_lists import get_features_dict
 
 logger = getLogger()
 
@@ -13,11 +15,7 @@ def pca_threshold(feature_df, group_name, evr_thresh=0.95, evr_tol=None, **pca_p
     pca_former = None
     for feature in feature_df.columns[1:]:
         transformed_list.append(feature)
-        new_pca_former = (
-            PCA(n_components=1, **pca_params)
-            .set_output(transform="pandas")
-            .fit(X=feature_df[transformed_list])
-        )
+        new_pca_former = PCA(n_components=1, **pca_params)
         pca_data = new_pca_former.transform(feature_df[transformed_list])
         new_evr = new_pca_former.explained_variance_ratio_
         logger.debug("EVR with {}: {}".format(feature, new_evr))
