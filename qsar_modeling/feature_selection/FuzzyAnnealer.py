@@ -1056,14 +1056,32 @@ class FuzzyAnnealer:
         """
 
     def freeze_best(self):
-        best_fit_model = FrozenEstimator(
-            self.models["predict"].fit(
-                X=self.feature_df[list(self.best_subset)], y=self.labels
-            )
+        best_fit_model = fit_weighted(
+            estimator=self.models["predict"],
+            X=self.feature_df,
+            y=self.labels,
+            weights=self.sample_weight,
         )
+        frozen_model = FrozenEstimator(best_fit_model)
         with open("{}best_model.pkl".format(self.save_dir), "wb") as f:
-            pickle.dump(best_fit_model, f)
+            pickle.dump(frozen_model, f)
         return best_fit_model
+
+    def freeze_cv_best(self, cv):
+        model_tuples = list()
+        for train_X, train_y, test_X, test_y in cv_tools.split_df(
+            self.feature_df, self.labels
+        ):
+            trained = fit_weighted(
+                clone(self.models["predict"]),
+                X=train_X,
+                y=train_y,
+                weights=self.sample_weight[train_y.index],
+            )
+            y_pred = pd.Series(trained.predict(X=test_X), index=test_X.index)
+            y_prob = pd.DataFrame(trained.predict_proba(X=test_X), index=test_X.index)
+            model_tuples.append((trained, test_y.copy(), y_pred, y_prob))
+        return model_tuples
 
     def current_best_ratio(self):
         r_best = (
