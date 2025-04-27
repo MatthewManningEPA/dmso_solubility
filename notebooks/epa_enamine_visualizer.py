@@ -125,6 +125,49 @@ def plot_dmso_model_displays():
     pass
 
 
+def multi_model_clf_displays(
+    estimator_tuples,
+    train_df,
+    train_labels,
+    select_params,
+    preds_list=None,
+    probs_list=None,
+    subset_dir=None,
+    sample_weights_list=None,
+    display_labels=None,
+    frozen=False,
+):
+    preds, probs, weights = None, None, None
+    axes_list = None
+    save_dir = None
+    for i_est, (est, est_name) in enumerate(estimator_tuples):
+        preds, probs, weights = None, None, None
+        if preds_list is not None:
+            preds = preds_list[i_est]
+        if probs_list is not None:
+            probs = probs_list[i_est]
+        if sample_weights_list is not None:
+            weights = sample_weights_list[i_est]
+        elif isinstance(sample_weights_list, (pd.Series)):
+            weights = sample_weights_list
+        if i_est == len(estimator_tuples) - 1:
+            save_dir = subset_dir
+        axes_list = plot_clf_model_displays(
+            estimator=est,
+            estimator_name=est_name,
+            train_df=train_df,
+            train_labels=train_labels,
+            select_params=select_params,
+            preds=preds,
+            probs=probs,
+            subset_dir=save_dir,
+            sample_weight=weights,
+            frozen=frozen,
+            axes_list=axes_list,
+        )
+    return axes_list
+
+
 def plot_clf_model_displays(
     estimator,
     estimator_name,
@@ -262,7 +305,76 @@ def plot_clf_model_displays(
     return rcd, det, lcd, cmd
 
 
-def _plot_proba_pairs(labels, n, subset_predicts, select_params):
+def _plot_proba_pairs(labels, subset_predicts, select_params):
+    """
+
+    Parameters
+    ----------
+    labels : pd.Series
+    subset_predicts : list[dict[str[ strpd.Series | pd.DataFrame]
+    select_params : dict
+
+    Returns
+    -------
+
+    """
+    pred_df, pred_long = _prep_for_proba_pairs(labels, subset_predicts, select_params)
+    fg = sns.FacetGrid(
+        pred_long, row="variable", col="variable", margin_titles=True, sharey=False
+    )
+    true_labels = pred_df["True"].unique()
+    print(pred_df.loc[pred_df["True"] == true_labels[0]])
+    for i, j in itertools.combinations(pred_df.drop(columns="True").columns, r=2):
+        # print(col[0]*(pred_df.shape[1] - 1) + col[1] - 1)
+        ax1 = fg.facet_axis(pred_df.columns.get_loc(i), pred_df.columns.get_loc(j))
+        ax1.set(xlim=(-0.01, 1.01))
+        ax1.set(ylim=(-0.01, 1.01))
+        ax1 = sns.scatterplot(
+            x=pred_df[pred_df["True"] == true_labels[0]][i],
+            y=pred_df[pred_df["True"] == true_labels[0]][j],
+            ax=ax1,
+            size=0.01,
+            legend=False,
+            color="red",
+        )
+        ax2 = fg.facet_axis(pred_df.columns.get_loc(j), pred_df.columns.get_loc(i))
+        ax2.set(xlim=(-0.01, 1.01))
+        ax2.set(ylim=(-0.01, 1.01))
+        sns.scatterplot(
+            x=pred_df[pred_df["True"] == true_labels[1]][i],
+            y=pred_df[pred_df["True"] == true_labels[1]][j],
+            ax=ax2,
+            size=0.01,
+            legend=False,
+            color="blue",
+        )
+    for i, clr in zip(pred_df.drop(columns="True").columns.tolist(), ("red", "blue")):
+        sns.histplot(
+            pred_long[pred_long["variable"] == i].drop(columns="variable"),
+            x="value",
+            hue="True",
+            stat="density",
+            common_norm=False,
+            common_bins=True,
+            color=clr,
+            ax=fg.facet_axis(pred_df.columns.get_loc(i), pred_df.columns.get_loc(i)),
+            legend=False,
+        )
+        # fg.fig.axes[col[0]+ col[1] - 1].scatter(x=pred_df[col[0]], y=flat_resids[col])
+        # pg = pg.fig.axes[col[0]*(resid_df.shape[1] + 1) + col[1]].scatter(x=pred_df[col[0]], y=flat_resids[col])
+        # pg = pg.map_upper(sns.scatterplot, data=flat_resids, size=0.75, alpha=.6)
+    plt.close()
+    return fg
+
+
+def _prep_for_proba_pairs(labels, subset_predicts, select_params):
+    assert isinstance(subset_predicts, (list, tuple))
+    for m in subset_predicts:
+        assert isinstance(m, dict)
+        for v in m.values():
+            assert isinstance(v, dict)
+            for d in v.values():
+                assert isinstance(d, (pd.Series, pd.DataFrame))
     marker_style = dict(
         color="tab:blue",
         linestyle=":",
@@ -399,3 +511,72 @@ def plot_proba_distances(
                 )
             )
     return model_dist_plots
+
+
+def plot_models(
+    feature_df,
+    labels,
+    select_params,
+    estimator_name,
+    estimator_list,
+    best_features_list,
+    save_dir,
+    save_path,
+    preds_list=None,
+    probs_list=None,
+    sample_weight_list=None,
+):
+    """
+
+    Parameters
+    ----------
+    feature_df : pd.DataFrame
+    labels: pd.Series
+    select_params : dict
+    estimator_name : str
+    estimator_list : list of estimators
+    best_features_list : list of lists or tuples
+    save_dir : str
+    save_path : str
+    preds_list : list of pd.Series or None
+    probs_list : list of pd.Series | pd.DataFrames or None
+    sample_weight_list : list [pd.Series] | None
+    """
+    print(preds_list)
+    for i, (estimator, best_features, weights) in enumerate(
+        zip(estimator_list, best_features_list, sample_weight_list)
+    ):
+        submodel_name = "{}_{}".format(estimator_name, i)
+        if preds_list is not None:
+            preds = pd.concat(preds_list[i])
+        else:
+            preds = None
+        if probs_list is not None:
+            probs = pd.concat(probs_list[i])
+        else:
+            probs = None
+        plots = plot_clf_model_displays(
+            estimator=estimator,
+            estimator_name=submodel_name,
+            train_df=feature_df[list(best_features)],
+            train_labels=labels,
+            select_params=select_params,
+            preds=preds,
+            probs=probs,
+            subset_dir=save_dir,
+            sample_weight=weights,
+        )
+        plt.close()
+
+    results_list, scores_plot = plot_model_scores(
+        feature_df=feature_df,
+        train_labels=labels,
+        score_tups=select_params["score_tups"],
+        estimator_list=estimator_list,
+        subsets=best_features_list,
+        cv=select_params["cv"],
+    )
+    # score_plot.figure.set(title="{}".format(model_name), ylabel="Score")
+    scores_plot.savefig(save_path)
+    plt.close()
+    # pd.concat(results_list).to_csv("{}{}results_long-form.csv".format(path_dict["exp_dir"], estimator_name))
