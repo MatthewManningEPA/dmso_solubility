@@ -38,24 +38,32 @@ class FuzzyAnnealer:
     ALLOW_DIRECT_SCORE = False
 
     def __init__(self, params, models, save_dir, **kwargs):
-        self.feature_df = None
-        self.labels = None
-        self.cross_corr = None
-        self.sq_xcorr = None
-        self.label_corr = None
+        # Constants
         self.params = params
         self.models = models
+        self.save_dir = save_dir
+        # State Dependent
         self._current_features = None
         self._current_score = None
         self.best_subset = None
         self.best_score = -999
         self.subset_scores = dict()
         self.chosen_subsets = list()
-        self.other_probs = None
-        self.temp = 1
-        self.clean_up = False
         self.best_model = None
-        self.save_dir = save_dir
+        self.clean_up = False
+        self.temp = 1
+        # Inputs and their calculated values
+        self.feature_df = None
+        self.labels = None
+        self.cross_corr = None
+        self.sq_xcorr = None
+        self.label_corr = None
+        self.other_probs = list()
+        self.proba_weight = None
+        self.sample_weight = None
+        self.best_preds = None
+
+    # Setters and Getters
 
     @property
     def current_score(self):
@@ -102,26 +110,58 @@ class FuzzyAnnealer:
             raise ValueError
         if tuple(sorted(value)) not in self.subset_scores.keys():
             self._current_score, _ = self.score_subset(
-                value, sample_weight=self.params["sample_weight"]
+                value, sample_weight=self.sample_weight
             )
         self._current_features = value
+
+    def partial_fit(
+        self,
+        feature_df=None,
+        labels=None,
+        other_probs=None,
+        initial_subset=None,
+        proba_weight=None,
+    ):
+        self.subset_scores = dict()
+        self.chosen_subsets = list()
+        self.best_score = -999
+        self.clean_up = False
+        self.temp = 1
+        self.cross_corr = None
+        self.sq_xcorr = None
+        self.label_corr = None
+        self.other_probs = other_probs
+        self.proba_weight = proba_weight
+        self.sample_weight = None
+        self.fit(
+            feature_df=feature_df,
+            labels=labels,
+            other_probs=other_probs,
+            initial_subset=initial_subset,
+            proba_weight=proba_weight,
+            randomize=False,
+        )
 
     def fit(
         self,
         feature_df,
         labels,
-        cross_corr,
-        label_corr,
-        other_probs,
-        inital_subset=None,
+        other_probs=None,
+        initial_subset=None,
+        proba_weight=None,
+        randomize=True,
+        **kwargs
     ):
         self.feature_df = feature_df
         self.labels = labels
         self.cross_corr = cross_corr
         self.label_corr = label_corr
         self.other_probs = other_probs
-        self._current_features = inital_subset
-        self.sq_xcorr = self.cross_corr * self.cross_corr
+        self.proba_weight = proba_weight
+        self.cross_corr = None
+        self.label_corr = None
+        self.sq_xcorr = None
+        self._current_features = initial_subset
         self.params["min_features_elim"] = min(
             self.params["features_min_vif"],
             self.params["features_min_perm"],
