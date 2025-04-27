@@ -167,6 +167,68 @@ class FuzzyAnnealer:
             self.params["features_min_perm"],
             self.params["features_min_sfs"],
         )
+        # Type and value checking for probabilities of other subsets.
+        self.initialize_other_probs(labels, other_probs, randomize=randomize)
+        # Set sample weights to bias feature selection.
+        if self.proba_weight is None or self.proba_weight.mask(lambda x: x == 0).all():
+            self.proba_weight = samples.weight_by_proba(
+                y_true=labels,
+                probs=self.other_probs,
+                prob_thresholds=self.params["brier_clips"],
+                combo_type=self.params["pred_combine"],
+            )
+        self.proba_weight = pd.Series(
+            data=_check_sample_weight(
+                self.proba_weight, X=self.feature_df, ensure_non_negative=True
+            ),
+            index=feature_df.index,
+        )
+        if (
+            self.params["base_weight"] is None
+            or self.params["base_weight"].mask(lambda x: x == 0).all()
+        ):
+            self.params["base_weight"] = pd.Series(1, index=self.labels.index)
+        self.params["base_weight"] = pd.Series(
+            _check_sample_weight(
+                self.params["base_weight"], X=self.feature_df, ensure_non_negative=True
+            ),
+            index=self.feature_df.index,
+        )
+        if self.proba_weight is not None and self.proba_weight.sum() > 0:
+            self.sample_weight = pd.Series(
+                _check_sample_weight(
+                    self.params["base_weight"] * self.proba_weight,
+                    X=self.feature_df,
+                    ensure_non_negative=True,
+                ),
+                index=feature_df.index,
+            )
+        print(self.params["base_weight"])
+        print(self.proba_weight)
+        print(self.sample_weight)
+        # Calculate Correlations.
+        if (
+            (self.sq_xcorr is None or self.label_corr is None)
+            and self.sample_weight is not None
+            and self.sample_weight.var() > 0.0001
+            and self.sample_weight[self.sample_weight == 0.0].size
+            != self.sample_weight.size
+        ):
+            self.label_corr, x_corr = correlation_filter.get_weighted_correlations(
+                self.feature_df,
+                self.labels,
+                self.params,
+                self.save_dir,
+                weights=self.sample_weight,
+            )
+        else:
+            self.label_corr, x_corr = correlation_filter.get_correlations(
+                feature_df,
+                labels,
+                corr_method=self.params["corr_method"],
+                xc_method=self.params["xc_method"],
+            )
+        self.sq_xcorr = x_corr**2
         # <editor-fold desc="Factor Out">
         with open("{}selection_params.txt".format(self.save_dir), "w") as f:
             for k, v in self.params.items():
@@ -221,6 +283,72 @@ class FuzzyAnnealer:
                 break
             i -= 1
         return self
+
+    def initialize_other_probs(self, labels, other_probs, randomize=False):
+        if (
+            other_probs is not None
+            and isinstance(other_probs, (list, tuple, set))
+            and len(other_probs) > 0
+        ):
+            self.other_probs = other_probs
+
+        elif other_probs is None or (
+            isinstance(other_probs, (list, tuple, set)) and len(other_probs) == 0
+        ):
+            if self.other_probs is None:
+                self.other_probs = list()
+            if self.params["randomize_init_weights"] and randomize:
+                if is_classifier(self.models["predict"]):
+                    onehot = samples.one_hot_conversion(y_true=self.labels)[0].loc[
+                        self.labels.index
+                    ]
+                    n_obs = self.labels.shape[0]
+                    poissons = pd.Series(
+                        np.random.default_rng().poisson(
+                            lam=np.int32(np.log2(n_obs)),
+                            size=n_obs,
+                        ),
+                        index=self.labels.index,
+                    ).div(np.int32(np.log2(n_obs)))
+
+                    p_df = poissons - poissons.min() + 0.1
+                    p_df = p_df / (p_df.max() * 1.1)
+                    values = pd.concat([p_df, 1 - p_df], axis=1)
+                    # onehot.mul(-1).add(1).sub(
+                    print("\nRandomized probs: \n{}".format(values))
+                    self.other_probs.append(values)
+                else:
+                    gausses = pd.Series(
+                        np.random.default_rng().normal(
+                            loc=self.labels.mean(),
+                            scale=self.labels.std(),
+                            size=self.labels.shape,
+                        ),
+                        index=self.labels.index,
+                    )
+                    self.other_probs.append(gausses)
+            else:
+                if is_classifier(self.models["predict"]):
+                    self.other_probs.append(
+                        pd.DataFrame(
+                            1 / labels.nunique(),
+                            index=self.labels.index,
+                            columns=np.arange(self.labels.nunique()),
+                        )
+                    )
+                elif is_regressor(self.models["predict"]):
+                    self.other_probs.append(
+                        pd.Series(labels.mean(), index=labels.index)
+                    )
+        else:
+            print(other_probs)
+            print(type(other_probs))
+            if not isinstance(
+                other_probs, (pd.Series, pd.DataFrame)
+            ) and not isinstance(other_probs, (list, tuple, set)):
+                raise ValueError
+            else:
+                raise ValueError
 
     def _get_add_remove(self):
         p_add, p_remove = math_tools.add_remove_probs(
