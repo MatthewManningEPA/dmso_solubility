@@ -1,235 +1,24 @@
 import copy
-import itertools
-import pprint
+from inspect import signature
 
-import numpy as np
 import pandas as pd
-import seaborn as sns
-from sklearn import clone
-from sklearn.metrics import mean_squared_error, mean_squared_log_error
-from sklearn.metrics.pairwise import cosine_distances
-from sklearn.model_selection import StratifiedKFold
+from sklearn.base import is_classifier, is_regressor
+from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import compute_sample_weight
-from sklearn.utils._param_validation import HasMethods
+from sklearn.utils.validation import _check_sample_weight
 
-import cv_tools
 from dmso_utils import data_tools
 
 
-def model_prediction_distance(
-    predicts_list, metric=mean_squared_log_error, sample_weight=None
-):
-    n_predicts = len(predicts_list)
-    distances = np.zeros(shape=(n_predicts, n_predicts), dtype=np.float32)
-    for i, j in itertools.combinations(np.arange(n_predicts), r=2):
-        print(predicts_list[i], predicts_list[j])
-        distances[i, j] = distances[j, i] = metric(
-            predicts_list[i], predicts_list[j], sample_weight=sample_weight
-        )
-    return distances
-
-
-def cv_model_prediction_distance(
-    feature_df,
-    labels,
-    name_model_subset_tup,
-    dist_metric=cosine_distances,
-    cv=StratifiedKFold,
-    response="predict_proba",
-    **kwargs
-):
-    # Make regressor/response-compatible use sklearn estimator checks. Correct default CV splitter.
-    test_idx_list = list()
-    distance_dict = {"test": list(), "train": list()}
-    predict_dict = dict()
-    for name, model, subset in name_model_subset_tup:
-        predict_dict[name] = {"test": list(), "train": list()}
-    for train_X, train_y, test_X, test_y in cv_tools.split_df(
-        feature_df, labels, splitter=cv, **kwargs
+def sample_wt_opt(func, sample_weight, *args, **kwargs):
+    if (
+        "sample_weight" in signature(func).parameters.keys()
+        and sample_weight is not None
     ):
-        split_X, split_y = {"train": train_X, "test": test_X}, {
-            "train": train_y,
-            "test": test_y,
-        }
-        split_X["train"] = train_X
-        split_X["test"] = test_X
-        test_idx_list.append(test_y.index)
-        assert not split_X["train"].empty
-        estimator_list = list()
-        for name, estimator, subset in name_model_subset_tup:
-            if (
-                HasMethods("sample_weight").is_satisfied_by(estimator)
-                and "sample_weight" in kwargs.keys()
-            ):
-                print("Using sample weights to score subsets...")
-                fit_est = clone(estimator).fit(
-                    split_X["train"][subset],
-                    split_y["train"],
-                    sample_weight=kwargs["sample_weight"].loc[train_y.index],
-                )
-            else:
-                fit_est = clone(estimator).fit(
-                    split_X["train"][subset], split_y["train"]
-                )
-            estimator_list.append((fit_est, subset))
-            for split_set in predict_dict[name].keys():
-                result_df = pd.DataFrame(
-                    getattr(fit_est, response)(X=split_X[split_set][subset]),
-                    index=split_X[split_set].index,
-                ).squeeze()
-                if isinstance(result_df, pd.Series):
-                    result_df.name = split_set
-                predict_dict[name][split_set].append(result_df)
-    split_distplot_dict = dict()
-    for split_set in distance_dict.keys():
-        dist_list = list()
-        for r in zip(
-            [predict_dict[name][split_set] for name, _, _ in name_model_subset_tup]
-        ):
-            zip_list = [pd.concat(df) for df in r]
-            print(zip_list)
-            # dist_list.append(r)
-            # dist_list.append(model_prediction_distance(r, dist_metric))
-            dist_list.append(np.vstack(zip_list))
-        distance_dict[split_set] = pd.DataFrame(np.hstack(dist_list)).merge(
-            labels, left_index=True, right_index=True
-        )
-        split_distplot_dict[split_set] = sns.pairplot(data=distance_dict[split_set])
-    return split_distplot_dict
-
-
-def weigh_single_proba(onehot_true, probs, prob_thresholds=None):
-    if prob_thresholds is not None:
-        probs.clip(lower=prob_thresholds[0], upper=prob_thresholds[1], inplace=True)
-    unweighted = (
-        probs.add(onehot_true).abs().multiply(onehot_true).sum(axis=1).squeeze()
-    )
-    return unweighted
-
-
-def weight_by_error(y_true, predicts, loss=mean_squared_error):
-    y_pred = predicts.copy()
-    y_true = y_true.copy()
-    print(y_true)
-    print(y_pred)
-    if isinstance(y_pred, (list, tuple)):
-        resids = pd.concat([y_true - p for p in y_pred], axis=1).max(axis=1)
+        return func(*args, sample_weight=sample_weight, **kwargs)
     else:
-        resids = y_true - y_pred
-    print(resids)
-    # sample_losses = loss(y_true=y_true[y_pred.index], y_pred=y_pred, multioutput="raw_values")
-    # print(sample_losses)
-    return pd.Series(data=resids**2, index=y_true.index, name="losses")
-
-
-def weight_by_proba(
-    y_true,
-    probs,
-    prob_thresholds=(0, 1.0),
-    label_type="binary",
-    combo_type="max",
-    class_labels=None,
-):
-    probs = copy.deepcopy(probs)
-    y_true = y_true.copy()
-    onehot_labels, onehot_normed = one_hot_conversion(
-        y_true, label_type=label_type, class_labels=class_labels
-    )
-    if isinstance(probs, list) and len(probs) == 0 and isinstance(probs, pd.DataFrame):
-        probs = probs[0]
-    if isinstance(probs, pd.DataFrame):
-        # sample_weights_raw = weigh_single_proba(onehot_true=onehot_normed, probs=probs, prob_thresholds=prob_thresholds)
-        if prob_thresholds is not None:
-            probs.clip(lower=prob_thresholds[0], upper=prob_thresholds[1], inplace=True)
-        sample_weights = probs.multiply(onehot_labels).sum(axis=1).squeeze()
-        # pd.DataFrame(data=np.zeros_like(probs.to_numpy()), index=y_true, columns=probs.columns)
-        # [ (p - (1-T)/n_classes) ]
-        # where: p = probs, T = one-hot encoded classes
-        # onehot_labels = OneHotEncoder(categories=y_true.tolist(), sparse_output=False, dtype=np.int16).fit_transform(y_true.to_frame())
-
-        # print("Normed:\n{}".format(pprint.pformat(onehot_normed.shape)))
-    elif isinstance(probs, list) and len(probs) > 1:
-        if class_labels is not None:
-            for p in probs:
-                p.columns = class_labels
-        unweighted = pd.concat(
-            [p.multiply(onehot_labels).sum(axis=1).squeeze() for p in probs],
-            axis=1,
-        )
-        # print("Unweighted len: {}\n".format(len(unweighted)))
-        # unweighted_sols = pd.concat([p["Soluble"] for p in unweighted], axis=1)
-        # unweighted_ins = pd.concat([p["Insoluble"] for p in unweighted], axis=1)
-        # print("Unweighted Insolubles")
-        # pprint.pp(unweighted_ins)
-        # print("Unweighted:")
-        # pprint.pp(unweighted)
-        # unweighted_min = unweighted.min(axis=1)
-        # unweighted_avg = unweighted.mean(axis=1)
-        # print("Unweighted Minimum")
-        # pprint.pp(unweighted_min)
-        # print("Unweighted Average")
-        # pprint.pp(unweighted_avg)
-        # unweighted = unweighted.max(axis=1)
-        if combo_type == "mean":
-            sample_weights = unweighted.mean(axis=0)
-        # elif combo_type == "max":
-        else:
-            sample_weights = unweighted.max(axis=1)
-        # if "sq" in activate:
-        #     pd.Series.apply()
-    else:
-        print("Unknown type for probabilities processing...")
-        print(probs)
-        raise ValueError
-    try:
-        sample_weights.reindex_like(other=probs)
-    except:
-        # print(probs)
-        sample_weights.set_index = probs.index
-    print("\nSample weights:")
-    pprint.pprint(sample_weights.describe())
-    return sample_weights
-
-
-def one_hot_conversion(
-    y_true, threshold="auto", label_type="binary", class_labels=None
-):
-    if not isinstance(y_true.squeeze(), pd.Series) and label_type == "binary":
-        y_true = LabelBinarizer().fit_transform(y_true.to_frame())
-    onehot_labels = pd.concat([y_true, 1 - y_true], axis=1)
-    assert onehot_labels.shape == (y_true.shape[0], y_true.nunique())
-    if class_labels is not None:
-        onehot_labels.columns = class_labels
-    if threshold == "auto" or threshold is None:
-        threshold = pd.DataFrame(
-            data=1.0 / y_true.nunique(),
-            columns=onehot_labels.columns,
-            index=onehot_labels.index,
-        )
-    try:
-        onehot_normed = onehot_labels.sub(threshold)
-    except TypeError:
-        print(threshold)
-        onehot_normed = onehot_labels.sub(1.0 / y_true.nunique())
-    onehot_normed.columns = onehot_labels.columns
-    return onehot_labels, onehot_normed
-
-
-def compare_models_to_predictions(
-    feature_df, model_subsets, metric, predictions=None, response="predict"
-):
-    new_predicts = list()
-    for m, s in model_subsets:
-        if response == "predict":
-            new_predicts.append(m.predict(feature_df[s]))
-        else:
-            new_predicts.append(m.predict_proba(feature_df[s]))
-    distances = pd.concat(
-        [np.corrwith(other=predictions, axis=1, method=metric) for np in new_predicts],
-        keys=[model_subsets.keys()],
-    )
-    return distances
+        return func(*args, **kwargs)
 
 
 def get_sample_info(inchi_keys, source=None, labels=None, drop_dupes=False):
@@ -255,6 +44,7 @@ def get_sample_info(inchi_keys, source=None, labels=None, drop_dupes=False):
 
 def get_dmso_source_label_df(inchi_keys=None, include_only=None, exclude=None):
     # Returns DataFrame listing DMSO solubility and data source for each INCHI key.
+    raise DeprecationWarning
     meta_loaded = data_tools.load_metadata()
     data_dfs = list()
     for k, v in meta_loaded.items():
@@ -338,3 +128,165 @@ def safe_mapper(x, map):
         return map[x]
     else:
         return x
+
+
+def weights_from_predicts(
+    y_true, y_predict, predict_model, select_params, score_func, combo_type="best"
+):
+    if isinstance(y_predict, (pd.Series, pd.DataFrame)):
+        test_scores = [y_predict]
+    elif isinstance(y_predict, (list, tuple, set)):
+        test_scores = list()
+        for val in y_predict:
+            if isinstance(val[score_func]["test"], (pd.Series, pd.DataFrame)):
+                test_scores.append(val[score_func]["test"])
+            elif all([(isinstance(a, (pd.Series, pd.DataFrame)) for a in val)]):
+                test_scores.append(pd.concat(val[score_func]["test"]))
+            else:
+                print(val)
+                raise ValueError
+    else:
+        raise ValueError
+    if is_classifier(predict_model):
+        new_weights = weight_by_proba(
+            y_true=y_true,
+            probs=test_scores,
+            prob_thresholds=select_params["brier_clips"],
+            combo_type=combo_type,
+        )
+    elif is_regressor(predict_model):
+        new_weights = weight_by_error(
+            y_true=y_true, predicts=test_scores, loss=score_func
+        )
+    else:
+        raise ValueError
+    assert isinstance(new_weights, pd.Series)
+    return new_weights
+
+
+def weight_by_error(y_true, predicts, loss=mean_squared_error):
+    y_pred = predicts.copy()
+    y_true = y_true.copy()
+    if isinstance(y_pred, (list, tuple)):
+        resids = pd.concat([y_true - p for p in y_pred], axis=1).max(axis=1)
+    else:
+        resids = y_true - y_pred
+    # sample_losses = loss(y_true=y_true[y_pred.index], y_pred=y_pred, multioutput="raw_values")
+    # print(sample_losses)
+    return pd.Series(data=resids**2, index=y_true.index, name="losses")
+
+
+def weight_by_proba(
+    y_true,
+    probs,
+    prob_thresholds=(0, 1.0),
+    label_type="binary",
+    combo_type="best",
+    class_labels=None,
+):
+    probs = copy.deepcopy(probs)
+    y_true = y_true.copy()
+    onehot_labels, onehot_normed = one_hot_conversion(
+        y_true, label_type=label_type, class_labels=class_labels
+    )
+    if (
+        isinstance(probs, (list, tuple, set))
+        and len(probs) == 1
+        and isinstance(probs[0], (pd.DataFrame, pd.Series))
+    ):
+        probs = probs[0]
+    if isinstance(probs, pd.DataFrame):
+        # sample_weights_raw = weigh_single_proba(onehot_true=onehot_normed, probs=probs, prob_thresholds=prob_thresholds)
+        if prob_thresholds is not None:
+            probs.clip(lower=prob_thresholds[0], upper=prob_thresholds[1], inplace=True)
+            if class_labels is not None:
+                probs.columns = class_labels
+        sample_weights = probs.multiply(onehot_labels).sum(axis=1).squeeze()
+        # pd.DataFrame(data=np.zeros_like(probs.to_numpy()), index=y_true, columns=probs.columns)
+        # [ (p - (1-T)/n_classes) ]
+        # where: p = probs, T = one-hot encoded classes
+        # onehot_labels = OneHotEncoder(categories=y_true.tolist(), sparse_output=False, dtype=np.int16).fit_transform(y_true.to_frame())
+
+        # print("Normed:\n{}".format(pprint.pformat(onehot_normed.shape)))
+    elif isinstance(probs, pd.Series):
+        sample_weights = probs
+    elif (
+        isinstance(probs, (list, tuple, set))
+        and len(probs) > 1
+        and not any([p is None for p in probs])
+    ):
+        if class_labels is not None:
+            for p in probs:
+                p.columns = class_labels
+        unweighted = pd.concat(
+            [p.multiply(onehot_labels).sum(axis=1).squeeze() for p in probs],
+            axis=1,
+        )
+        # print("Unweighted len: {}\n".format(len(unweighted)))
+        # unweighted_sols = pd.concat([p["Soluble"] for p in unweighted], axis=1)
+        # unweighted_ins = pd.concat([p["Insoluble"] for p in unweighted], axis=1)
+        # print("Unweighted Insolubles")
+        # pprint.pp(unweighted_ins)
+        # print("Unweighted:")
+        # pprint.pp(unweighted)
+        # unweighted_min = unweighted.min(axis=1)
+        # unweighted_avg = unweighted.mean(axis=1)
+        # print("Unweighted Minimum")
+        # pprint.pp(unweighted_min)
+        # print("Unweighted Average")
+        # pprint.pp(unweighted_avg)
+        # unweighted = unweighted.max(axis=1)
+        if combo_type == "mean":
+            sample_weights = unweighted.mean(axis=1)
+        elif combo_type == "min":
+            sample_weights = unweighted.min(axis=1)
+        elif combo_type == "median":
+            sample_weights = unweighted.median(axis=1)
+        # elif combo_type == "max":
+        else:
+            sample_weights = unweighted.max(axis=1)
+        # if "sq" in activate:
+        #     pd.Series.apply()
+    else:
+        print("Unknown type for probabilities processing...")
+        print(probs)
+        print(type(probs))
+        raise TypeError
+    try:
+        sample_weights.reindex_like(other=probs)
+    except:
+        # print(probs)
+        sample_weights.set_index = probs.index
+    print("\nSample weights:")
+    sample_weights = pd.Series(
+        data=_check_sample_weight(
+            sample_weight=sample_weights, X=y_true, ensure_non_negative=True
+        ),
+        index=y_true.index,
+    ).sort_index()
+    assert not sample_weights.isna().any()
+    return sample_weights
+
+
+def one_hot_conversion(
+    y_true, threshold="auto", label_type="binary", class_labels=None
+):
+    if not isinstance(y_true.squeeze(), pd.Series) and label_type == "binary":
+        y_true = LabelBinarizer().fit_transform(y_true.to_frame())
+    onehot_labels = pd.concat([y_true, 1 - y_true], axis=1)
+    assert onehot_labels.shape == (y_true.shape[0], y_true.nunique())
+    if class_labels is not None:
+        onehot_labels.columns = class_labels
+    if threshold == "auto" or threshold is None:
+        threshold = pd.DataFrame(
+            data=1.0 / y_true.nunique(),
+            columns=onehot_labels.columns,
+            index=onehot_labels.index,
+        )
+    try:
+        onehot_normed = onehot_labels.sub(threshold)
+    except TypeError:
+        print(threshold)
+        onehot_normed = onehot_labels.sub(1.0 / y_true.nunique())
+    onehot_normed.columns = onehot_labels.columns
+    return onehot_labels, onehot_normed
