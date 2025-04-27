@@ -185,7 +185,7 @@ def get_correlations(
 
     """
 
-    if os.path.isfile(corr_path) and use_disk:
+    if corr_path is not None and os.path.isfile(corr_path) and use_disk:
         label_corr = pd.read_pickle(corr_path)
         print("Target correlation retrieved from disk.")
     else:
@@ -193,7 +193,7 @@ def get_correlations(
         label_corr = calculate_correlation(feature_df, labels, method=corr_method)
         if corr_path is not None and not labels.empty:
             label_corr.to_pickle(corr_path)
-    if os.path.isfile(xc_path) and use_disk:
+    if xc_path is not None and os.path.isfile(xc_path) and use_disk:
         print("Cross-correlation retrieved from disk.")
         cross_corr = pd.read_pickle(xc_path)
     else:
@@ -279,7 +279,8 @@ def weighted_correlation_matrix(feature_df, weights):
     # weights = (weights - weights.min()) / weights.max()
     # print(weights.describe())
     # print(weights.head())
-    assert weights[weights > 0.000001].size > 0
+    if not weights[weights > 0.000001].size > 0:
+        return calculate_correlation(feature_df)
     w_sums = weights.sum()
     print("w_sums: {}".format(w_sums))
     w_df = feature_df.multiply(weights, axis="index")
@@ -388,21 +389,27 @@ def bootstrapped_weighted_correlation(
     return corr_mean
 
 
-def get_weighted_correlations(
-    feature_df, labels, select_params, subset_dir, weights=None
-):
+def get_weighted_correlations(feature_df, labels, select_params, subset_dir, weights):
     weighted_xc_path = "{}weighted_cross_corr.csv".format(subset_dir)
     weighted_corr_path = "{}weighted_label_corr.csv".format(subset_dir)
     # Get sample-weighted pairwise correlation matrix
-    if weights is None:
-        weights = select_params["sample_weight"]
-    assert np.shape(weights)[0] == feature_df.shape[0]
-    weights = pd.Series(
-        _check_sample_weight(weights[feature_df.index], X=feature_df),
-        index=feature_df.index,
-    ).sort_index()
+    assert weights.shape[0] == feature_df.shape[0]
+    assert weights[weights.isna()].shape[0] == 0
+    if not weights.sum() > 0.0:
+        return get_correlations(
+            feature_df,
+            labels,
+            corr_method=select_params["corr_method"],
+            xc_method=select_params["xc_method"],
+        )
     feature_df.sort_index(inplace=True)
     labels.sort_index(inplace=True)
+    weights.sort_index(inplace=True)
+    weights = pd.Series(
+        data=_check_sample_weight(weights, X=feature_df, ensure_non_negative=True),
+        index=feature_df.index,
+    )
+
     if os.path.isfile(weighted_xc_path):
         cross_corr = pd.read_csv(weighted_xc_path, index_col=0, header=0)
         for col in cross_corr.columns:

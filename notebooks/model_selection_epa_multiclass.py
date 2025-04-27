@@ -12,6 +12,7 @@ import sklearn
 from sklearn import clone
 from sklearn.base import is_classifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.feature_selection import f_classif
 from sklearn.metrics import (
     balanced_accuracy_score,
     make_scorer,
@@ -140,8 +141,8 @@ def main():
     rus = True
     plot_all_feature_displays = True
     estimator_name = "parallel_training"
-    n_subsets = 3
-    n_epochs = 3
+    n_subsets = 15
+    n_epochs = 10
     (
         data_tuple,
         select_params,
@@ -306,7 +307,7 @@ def train_base_model(
             "n_estimators": 5000,
             "max_depth": 6,
             # "min_impurity_decrease": 0.05,
-            "max_leaf_nodes": 25,
+            "max_leaf_nodes": 35,
             # "max_features": "log2",
             "class_weight": "balanced",
             "n_jobs": -2,
@@ -354,15 +355,15 @@ def train_base_model(
                             booster.predict_proba(X=eval_X), index=eval_X.index
                         )
                     )
-            print(staged_df_list)
             staged_df = pd.concat(staged_df_list)
-            print(staged_df)
             prob_dist_list = [a[1] for a in staged_df.items()]
             fig_path = "{}base_model_prob_distance_heatmap.png".format(
                 path_dict["exp_dir"]
             )
-            plot_prob_dist_heatmap(
-                prob_dist_list, fig_path, include_thresholds=(0.0, None)
+            htmap = plot_prob_dist_heatmap(
+                prob_dist_list=prob_dist_list,
+                save_path=fig_path,
+                include_thresholds=(0.0, None),
             )
 
             i_list = np.arange(staged_df.shape[1])
@@ -394,7 +395,7 @@ def train_base_model(
                 y=train_labels,
                 method="predict_proba",
                 # cv=select_params["cv"],
-                n_jobs=-1,
+                # n_jobs=-1,
                 params=None,
             )
             probs = pd.DataFrame(probs, index=train_labels.index)
@@ -410,12 +411,28 @@ def train_base_model(
     if plot_all_feature_displays:
         display_dir = "{}base_model/".format(path_dict["exp_dir"])
         os.makedirs(display_dir, exist_ok=True)
+
+        f_stats, f_pvals = f_classif(X=train_df, y=1 - train_labels[train_df.index])
+        f_logp = (
+            pd.Series(f_pvals, index=train_df.columns)
+            .sort_values()
+            .map(np.log)
+            .mul(-1)
+            .clip(upper=100.0)
+        )
         subsets = tuple(
             [
-                train_df.columns.to_series().sample(n=select_params["max_features_out"])
-                for a in range(4)
+                train_df.columns.to_series().sample(
+                    n=select_params["max_features_out"], weights=f_logp
+                )
+                for a in range(2)
             ]
             + [train_df.columns.tolist()]
+        )
+        subsets = tuple(
+            [
+                train_df.columns.tolist(),
+            ]
         )
         score_results, score_plot = plot_model_scores(
             feature_df=train_df,
@@ -478,6 +495,7 @@ def plot_prob_dist_heatmap(
     )
     plt.savefig(save_path)
     plt.close()
+    return prob_distances
 
 
 def setup_params(dataset_name, frac_enamine, estimator, rus, estimator_name):
@@ -597,9 +615,9 @@ def _set_params(
         "loss_func": loss_func,
         "lang_lambda": 0.1,
         # Features In Use
-        "max_trials": 2,
+        "max_trials": 10,
         "randomize_init_weights": True,
-        "max_features_out": 20,
+        "max_features_out": 30,
         "min_features_out": 10,
         "tol": 0.01,
         "n_iter_no_change": 3,
@@ -625,8 +643,9 @@ def _set_params(
         "base_weight": None,
         "pos_label": 0,
         "brier_clips": (0.1, 1.0),
-        "prob_thresholds": (0.0, 0.8),
+        "prob_thresholds": (0.15, 0.85),
         "pred_combine": "best",
+        "best_k": 0.05,
     }
     if score_name is None:
         select_params["score_name"] = str(score_func.__repr__())
@@ -637,8 +656,8 @@ def _set_params(
             "n_estimators": 50,
             "class_weight": "balanced",
             # "max_depth": 15,
-            "max_leaf_nodes": 100,
-            "min_impurity_decrease": 0.001,
+            "max_leaf_nodes": 150,
+            # "min_impurity_decrease": 0.001,
             "n_jobs": -3,
         }
     )

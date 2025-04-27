@@ -36,6 +36,22 @@ def split_df(
     splitter=StratifiedKFold,
     **splitter_kws
 ):
+    """
+    Returns train_X, train_y, test_X, test_y as tuples.
+
+    Parameters
+    ----------
+    data
+    labels
+    indices_list
+    n_splits
+    splitter
+    splitter_kws
+
+    Returns
+    -------
+
+    """
     if indices_list is None:
         if splitter_kws is not None:
             splitter_kws = dict(

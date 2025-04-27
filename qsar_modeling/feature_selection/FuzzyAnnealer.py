@@ -1,35 +1,40 @@
 import copy
 import numbers
 import pickle
+import pprint
 import random
 
 import numpy as np
 import pandas as pd
-from sklearn.base import clone, is_classifier
+from sklearn.base import clone, is_classifier, is_regressor
 from sklearn.feature_selection._from_model import (
     _get_feature_importances as get_importances,
 )
 from sklearn.frozen import FrozenEstimator
 from sklearn.inspection import permutation_importance
 from sklearn.utils._param_validation import HasMethods
+from sklearn.utils.validation import _check_sample_weight
 from stats import geometric_mean
 
+import correlation_filter
+import cv_tools
 import math_tools
+import samples
 import scoring
 import vif
 from vif import calculate_vif, repeated_stochastic_vif
 
 
 def fit_weighted(estimator, X, y=None, weights=None):
-    if HasMethods("sample_weight").is_satisfied_by(estimator):
+    if (
+        HasMethods("sample_weight").is_satisfied_by(estimator)
+        and weights is not None
+        and weights.shape[0] == X.shape[0]
+    ):
         weight_kwargs = {"sample_weight": weights}
     else:
         weight_kwargs = {}
-    fit_model = estimator.fit(
-        X=X,
-        y=y,
-        **weight_kwargs,
-    )
+    fit_model = estimator.fit(X=X, y=y, **weight_kwargs)
     return fit_model
 
 
@@ -78,7 +83,7 @@ class FuzzyAnnealer:
             else:
                 score, _ = self.score_subset(
                     tuple(sorted(self._current_features)),
-                    sample_weight=self.params["sample_weight"],
+                    sample_weight=self.sample_weight,
                 )
             if not (
                 isinstance(score, numbers.Real)
@@ -108,6 +113,10 @@ class FuzzyAnnealer:
     def current_features(self, value):
         if any([pd.isnull(v) or v is None for v in value]):
             raise ValueError
+        if isinstance(value, (str, int)):
+            value = [value]
+        else:
+            value = list(set(value))
         if tuple(sorted(value)) not in self.subset_scores.keys():
             self._current_score, _ = self.score_subset(
                 value, sample_weight=self.sample_weight
@@ -152,10 +161,31 @@ class FuzzyAnnealer:
         randomize=True,
         **kwargs
     ):
-        self.feature_df = feature_df
-        self.labels = labels
-        self.cross_corr = cross_corr
-        self.label_corr = label_corr
+        """
+        Selects feature subsets with the highest score (as defined by parameters) for the data and sample weights.
+
+        Parameters
+        ----------
+        feature_df : pd.DataFrame
+        labels : pd.Series
+        other_probs : list[pd.Series | pd.DataFrame]
+        Prediction (regression) or class probabilities from other models
+        initial_subset : (list, tuple, set)
+        Features to be included in first model built.
+        proba_weight : pd.Series | pd.DateaFrame
+        Sample weighting based on prior predictions.
+        Multiplied by self.params["base_weight"] to get final sample weights.
+        If None, calculated from other_probs and self.params["combo_type"]
+        randomize: bool
+            Whether to randomize initial prior_prob weights or leave at naive (mean or 1/n_classes).
+
+        Returns
+        -------
+        FuzzyAnnealer
+        Fitted estimator.
+        """
+        self.feature_df = feature_df.sort_index()
+        self.labels = labels.sort_index()
         self.other_probs = other_probs
         self.proba_weight = proba_weight
         self.cross_corr = None
@@ -230,12 +260,13 @@ class FuzzyAnnealer:
             )
         self.sq_xcorr = x_corr**2
         # <editor-fold desc="Factor Out">
-        with open("{}selection_params.txt".format(self.save_dir), "w") as f:
-            for k, v in self.params.items():
-                try:
-                    f.write("{}: {}\n".format(k, v))
-                except AttributeError:
-                    pass
+        if False:
+            with open("{}selection_params.txt".format(self.save_dir), "w") as f:
+                for k, v in self.params.items():
+                    try:
+                        f.write("{}: {}\n".format(k, v))
+                    except AttributeError:
+                        pass
         # </editor-fold>
 
         if self._current_features is None:
@@ -244,13 +275,14 @@ class FuzzyAnnealer:
                 .sample(weights=self.label_corr.abs(), n=1)
                 .tolist()
             )
-        while len(self._current_features) < self.params["min_features_out"]:
-            self.choose_next_feature(score_new_set=False)
+        if initial_subset is None:
+            while len(self._current_features) < self.params["min_features_out"]:
+                self.choose_next_feature(score_new_set=False)
         self.chosen_subsets.append(tuple(self.current_features))
         self.best_subset = tuple(self.current_features)
         print("\n\nInitial subset: {}".format(self.current_features))
         score, score_list = self.score_subset(
-            subset=self.current_features, sample_weight=self.params["sample_weight"]
+            subset=self.current_features, sample_weight=self.sample_weight
         )
         sl = [score]
         for i in np.arange(self.params["max_trials"]):
@@ -259,7 +291,7 @@ class FuzzyAnnealer:
             assert not pd.isnull(self.current_score)
             sl.append(self.current_score)
             latest_scores = sl[max(-self.params["n_iter_no_change"], -len(sl)) :]
-            print(latest_scores)
+            pprint.pprint(latest_scores, compact=True)
             if (
                 len(latest_scores) > self.params["n_iter_no_change"]
                 and (max(latest_scores) - min(latest_scores)) * 2 / (min(sl) + max(sl))
@@ -370,8 +402,8 @@ class FuzzyAnnealer:
             print(self.current_features)
             raise ValueError
         i = 0
+        print("Eliminating features.")
         while random.random() < p_remove and i < 10:
-            print("Eliminating features.")
             p_add, p_remove = self._get_add_remove()
             self.random_elimination(chance=p_remove)
             i += 1
@@ -387,7 +419,7 @@ class FuzzyAnnealer:
                 estimator=self.models[sampling],
                 X=self.feature_df[self.current_features],
                 y=self.labels,
-                weights=self.params["sample_weight"],
+                weights=self.sample_weight,
             )
             feat_weights = 1 / pd.Series(
                 get_importances(estimator=fit_importance, getter="auto"),
@@ -399,7 +431,7 @@ class FuzzyAnnealer:
                     vif.calculate_vif(
                         self.feature_df,
                         self.models["vif"],
-                        fit_kwargs=self.params["sample_weight"],
+                        fit_kwargs=self.sample_weight,
                     )
                 )
                 + 1e-6
@@ -415,7 +447,7 @@ class FuzzyAnnealer:
         score, score_list = self.score_subset(
             subset=new_subset,
             record_results=True,
-            sample_weight=self.params["sample_weight"],
+            sample_weight=self.sample_weight,
         )
         if score is None or pd.isnull(score):
             print(score)
@@ -423,7 +455,7 @@ class FuzzyAnnealer:
         if self.current_score is None:
             print("Current score is undefined!!!")
             print(self.current_features)
-            self.score_subset(sample_weight=self.params["sample_weight"])
+            self.score_subset(sample_weight=self.sample_weight)
             print(self.current_score)
             score_diff = 0
         else:
@@ -479,7 +511,7 @@ class FuzzyAnnealer:
                     feature_df=self.feature_df[predictors],
                     model=clone(self.models["vif"]),
                     subset=self.feature_df[[nf]],
-                    sample_wts=self.params["sample_weight"],
+                    sample_wts=self.sample_weight,
                 )
                 vifs[nf] = vifs_ser.mean() + 1e-6
             if use_thresh:
@@ -523,7 +555,7 @@ class FuzzyAnnealer:
             self.chosen_subsets.append(tuple(self.current_features))
             self.score_subset(
                 subset=self.current_features,
-                sample_weight=self.params["sample_weight"],
+                sample_weight=self.sample_weight,
             )
         """
         return
@@ -562,22 +594,29 @@ class FuzzyAnnealer:
         score = None
         for prior_set in self.subset_scores.keys():
             if len(set(subset_feats).symmetric_difference(set(prior_set))) == 0:
-                score = self.subset_scores[prior_set]
+                if prior_set is not None:
+                    score = self.subset_scores[prior_set]
                 # print("Duplicate scoring found:\n{}\n".format(subset_feats, prior_set))
                 break
         if score is None:
-            if sample_weight is not None:
-                results, exploded_dict, test_idx_list = scoring.cv_model_generalized(
+            if isinstance(subset_feats, str):
+                subset_feats = [subset_feats]
+            if (
+                sample_weight is not None
+                and subset_feats is not None
+                and len(subset_feats) > 0
+            ):
+                results, exploded_dict, (test_idx_list) = scoring.cv_model_generalized(
                     estimator=self.models["predict"],
                     feature_df=self.feature_df[list(subset_feats)],
                     labels=self.labels,
                     cv=self.params["cv"],
-                    methods=["predict_proba"],
+                    methods=self.params["model_output"],
                     sample_weight=sample_weight,
                     randomize_classes=False,
                 )
-            else:
-                results, exploded_dict, test_idx_list = scoring.cv_model_generalized(
+            elif subset_feats is not None and len(subset_feats) > 0:
+                results, exploded_dict, (test_idx_list) = scoring.cv_model_generalized(
                     estimator=self.models["predict"],
                     feature_df=self.feature_df[list(subset_feats)],
                     labels=self.labels,
@@ -585,7 +624,14 @@ class FuzzyAnnealer:
                     methods=["predict_proba"],
                     randomize_classes=False,
                 )
-            results = results["Original"]
+            else:
+                print("\nSubset is of length zero!")
+                print(subset_feats)
+                return None, None
+            results = pd.concat(
+                results["original"][self.params["model_output"]]["test"]
+            )
+            assert not results.empty
             """
             if len(score_tuple) > 0:
                 score = scoring.score_cv_results(
@@ -595,8 +641,6 @@ class FuzzyAnnealer:
             if is_classifier(self.models["predict"]):
                 # TODO: Add functionality for multiple predict_proba results from previous submodels.
                 brier_scores = list()
-                proba = pd.concat(results["predict_proba"]["test"])
-                assert not proba.empty
                 if isinstance(self.other_probs, (pd.Series, pd.DataFrame, np.ndarray)):
                     other_probs = [self.other_probs]
                 elif isinstance(self.other_probs, (list, tuple)) and all(
@@ -611,21 +655,30 @@ class FuzzyAnnealer:
                 # print("Other probs")
                 # print(other_probs)
                 for prior in other_probs:
-                    rel_brier_score, rel_brier = scoring.relative_brier_score(
+                    rel_brier_score, brier_obs = scoring.relative_brier_score(
                         y_true=self.labels,
-                        y_proba=proba,
+                        y_proba=results,
                         y_prior=prior,
-                        pos_label=self.params["pos_label"],
                         clips=self.params["brier_clips"],
+                        sample_weight=self.sample_weight,
                         class_weight=class_weight,
-                        sample_weight=self.params["sample_weight"],
+                        best_k=self.params["best_k"],
+                    )
+                    print(
+                        "Scoring used {} observations for {}.".format(
+                            brier_obs.shape[0], rel_brier_score
+                        )
                     )
                     brier_scores.append(rel_brier_score)
                 avg_score = np.min(brier_scores)
+                score = avg_score
             else:
+                print(self.models["predict"].__repr__)
                 raise NotImplementedError
             self.subset_scores[tuple(sorted(subset_feats))] = score
-            self._compare_to_best(avg_score, features=subset_feats)
+            self._compare_to_best(
+                score=avg_score, sample_preds=results, features=subset_feats
+            )
             if pd.isnull(avg_score) or avg_score is None:
                 print(avg_score, brier_scores)
                 raise ValueError
@@ -638,7 +691,7 @@ class FuzzyAnnealer:
                 avg_score = np.mean(score)
             else:
                 avg_score = score
-        assert avg_score is not None and not pd.isnull(avg_score) and avg_score != 0
+        assert avg_score is not None and not pd.isnull(avg_score)
         return avg_score, results
 
     def record_score(self, features, score, test_score=None):
@@ -665,15 +718,14 @@ class FuzzyAnnealer:
 
         return
 
-    def _compare_to_best(self, score, features=None):
-        if features is None:
-            features = self.current_features
+    def _compare_to_best(self, score, sample_preds, features=None):
         if self.best_subset is None:
             self.best_subset = self.current_features
 
-        if self.best_subset not in list(self.subset_scores.keys()):
+        if tuple(sorted(self.best_subset)) not in list(self.subset_scores.keys()):
             print("Previous best score was not found in list of scored subsets.")
-        if score > self.best_score:
+            self.score_subset(subset=self.best_subset, sample_weight=self.sample_weight)
+        if score >= self.best_score:
             print(
                 "New top results for {} feature model: {:.4f}".format(
                     len(features), score
@@ -682,6 +734,7 @@ class FuzzyAnnealer:
             self.best_subset = tuple(sorted(copy.deepcopy(features)))
             self.subset_scores[self.best_subset] = score
             self.best_score = score
+            self.best_preds = sample_preds
             best_yet = True
             self.temp = 1
         else:
@@ -717,7 +770,7 @@ class FuzzyAnnealer:
         feats = tuple(sorted(subset))
         assert len(feats) > 0
         if feats not in self.subset_scores.keys():
-            self.score_subset(subset=feats, sample_weight=self.params["sample_weight"])
+            self.score_subset(subset=feats, sample_weight=self.sample_weight)
         return self.subset_scores[feats]
 
     def best_score(self):
@@ -727,20 +780,27 @@ class FuzzyAnnealer:
         # Returns boolean of whether current score is within some amount of the best score.
         # Fewer features = Lower overmax = Greater adjust = Easier to pass
         if "sfs" in factor:
-            factor = self.params["thresh_sfs"]
+            factor = float(self.params["thresh_sfs"])
         elif "reset" in factor:
-            factor = self.params["thresh_reset"]
+            factor = float(self.params["thresh_reset"])
         elif "cleanup" in factor:
-            factor = self.params["thresh_sfs_cleanup"]
-        reference = self.subset_scores[tuple(sorted(self.best_subset))]
-        if reference is None:
-            self.score_subset(
-                subset=self.best_subset, sample_weight=self.params["sample_weight"]
-            )
-        if isinstance(scores, str) and "current" in scores:
-            scores = self.current_score
-            if set_size is None:
-                set_size = len(self.current_features)
+            factor = float(self.params["thresh_sfs_cleanup"])
+        else:
+            factor = 0
+        if factor is None:
+            factor = 0
+        reference, _ = self.score_subset(
+            subset=self.best_subset, sample_weight=self.sample_weight
+        )
+        if isinstance(scores, str):
+            if "current" in scores:
+                scores = self.current_score
+                if set_size is None:
+                    set_size = len(self.current_features)
+            else:
+                raise ValueError
+        elif scores is None:
+            return False
         elif set_size is None:
             raise UserWarning
             print("Feature set size needed if not using current feature set.")
@@ -748,6 +808,13 @@ class FuzzyAnnealer:
         adjust = math_tools.complexity_penalty(
             math_tools.size_factor(set_size, self.params), factor
         )
+        if any(
+            [
+                (a is None or isinstance(a, dict) or not isinstance(a, numbers.Real))
+                for a in [scores, reference, factor]
+            ]
+        ):
+            print(scores, reference, factor)
         return scores >= reference * (1 + factor)
 
     def sequential_elimination(
@@ -779,7 +846,7 @@ class FuzzyAnnealer:
             out_score, brier_list = self.score_subset(
                 subset=sorted(new_subset),
                 record_results=True,
-                sample_weight=self.params["sample_weight"],
+                sample_weight=self.sample_weight,
             )
             sfs_score_dict[left_out] = out_score
             if out_score is not None:
@@ -823,7 +890,7 @@ class FuzzyAnnealer:
                 set_size=set_size,
                 factor=clean,
             ):
-                self.current_features.remove(worst_feature_tup[0])
+                self.current_features = chosen_feat
             else:
                 subset_scores = None
         return subset_scores, chosen_feat
