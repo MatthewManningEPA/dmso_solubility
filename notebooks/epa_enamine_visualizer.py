@@ -19,9 +19,11 @@ from sklearn.model_selection import (
     LearningCurveDisplay,
     StratifiedKFold,
 )
+from sklearn.utils._param_validation import HasMethods
+from sklearn.utils.class_weight import compute_sample_weight
 
-import samples
 import scoring
+import scoring_metrics
 
 
 # from model_selection_epa_multiclass import _make_proba_residuals
@@ -39,66 +41,101 @@ def plot_model_scores(
     feature_df,
     train_labels,
     score_tups,
-    estimator,
+    estimator_list,
     subsets,
     cv=None,
     sample_weight=None,
-    **kwargs,
+    **kwargs
 ):
     assert len(subsets) > 0
+    group_cols = ["Subset", "Labels", "Split", "CV_Fold"]
+    long_cols = copy.deepcopy(group_cols)
+    long_cols.extend(["Score", "Metric", "subset"])
     results_list = list()
-    long_list = list()
     kwargs.update({"pos_label": 0})
+    long_method_dict_lists = dict()
     subset_df_list = list()
-    for i, best_features in enumerate(subsets):
+    for i, (best_features, zipped_estimator) in enumerate(zip(subsets, estimator_list)):
         # name_scorer_tups = dict((k, make_scorer(v)) for k, v in score_tups)
         score_dict = dict.fromkeys([name for name, f in score_tups])
         if len(best_features) == 0:
             continue
-        else:
-            print("Sample weights for model score plots:\n{}".format(sample_weight))
-        if isinstance(sample_weight, dict):
+            print("No features included for subset {}!!!".format(i))
+        print("Sample weights for model score plots:\n{}".format(sample_weight))
+        if sample_weight is None:
+            weights = None
+        elif isinstance(sample_weight, dict):
             weights = list(sample_weight.values())[i]
         else:
             weights = sample_weight
         all_results, long_form, test_idx_tuple = scoring.cv_model_generalized(
-            estimator=estimator,
-            feature_df=feature_df[pd.Index(best_features)],
+            estimator=zipped_estimator,
+            feature_df=feature_df[list(best_features)],
             labels=train_labels,
             cv=cv,
+            methods=["predict"],
             return_train=True,
-            score_list=score_tups,
             sample_weight=weights,
             randomize_classes="both",
             **kwargs,
         )
-        long_df = long_form["predict_proba"]
-        long_df.insert(loc=0, column="Subset", value=i)
-        long_list.append(long_form["predict_proba"])
         results_list.append(all_results)
-        print(all_results)
-        print("Plot input columns:")
-        print(long_list[0].columns)
-        base_info_df = long_form[
-            ["predict"]["Subset", "Labels", "Split", "CV_Fold"]
-        ].drop_duplicates()
-        group_cols = ["Subset", "Labels", "Split", "CV_Fold"]
-        score_input_cols = copy.deepcopy(group_cols)
-        score_input_cols.append("predict")
-        score_input_cols.append("True")
-        grouper = long_form[score_input_cols].groupby(
-            group_cols, as_index=False, group_keys=False
-        )
         for s_name, s_func in score_tups:
-            for g_name, g_df in grouper:
-                score_ser = g_df[group_cols].copy()
-                long_score = scoring.score_long_form(
-                    s_func, long_form["predict"], data_cols="predict", true_col="True"
+            method_name = scoring.get_input_for_scorer(s_func)
+            if method_name not in long_method_dict_lists.keys():
+                long_method_dict_lists[method_name] = list()
+            long_df = long_form[method_name]
+            if "Subset" not in long_df.columns:
+                long_df.insert(loc=0, column="Subset", value=i)
+            long_method_dict_lists[method_name].append(long_df)
+        # results_list.append(all_results)
+
+        long_method_dict = dict()
+        subset_ser_list = list()
+        for method_name, method_df in long_method_dict_lists.items():
+            long_method_dict[method_name] = pd.concat(method_df).reset_index(drop=True)
+            for s_name, s_func in score_tups:
+                method_name = scoring.get_input_for_scorer(s_func)
+                score_input_cols = copy.deepcopy(group_cols)
+                score_input_cols.append(method_name)
+                score_input_cols.append("True")
+                # print(long_method_dict[load_cv_results].columns)
+                # print(long_method_dict[load_cv_results])
+                grouper = (
+                    long_method_dict[method_name]
+                    .drop(
+                        columns=[
+                            a
+                            for a in long_method_dict[method_name]
+                            if a not in score_input_cols
+                        ]
+                    )
+                    .groupby(group_cols, as_index=False)
                 )
-                score_ser[s_name] = long_score
-                score_ser["Subset"] = i
-                subset_df_list.append(score_ser)
-    all_scores_long = pd.concat(subset_df_list)
+                for g_name, g_df in grouper:
+                    """
+                    base_info_df = (
+                        long_method_dict[load_cv_results][group_cols]
+                        .drop_duplicates()
+                        .squeeze()
+                    )
+                    """
+                    score_ser = pd.Series(data=g_name, index=group_cols)
+                    long_score = scoring.score_long_form(
+                        func=s_func,
+                        x=g_df[["True", method_name]],
+                        data_cols=method_name,
+                        true_col="True",
+                    )
+                    score_ser["score"] = long_score
+                    score_ser["Metric"] = s_name
+                    score_ser["Subset"] = i
+                    # print("score_ser")
+                    subset_ser_list.append(score_ser)
+        subset_df_list.append(pd.concat(subset_ser_list, axis=1).T)
+        # print("Concatenated subset_ser_list")
+        # print(pd.concat(subset_ser_list, axis=1).T)
+    all_scores_long = pd.concat(subset_df_list, ignore_index=True)
     pprint.pp(all_scores_long)
     sns.set_theme(
         "notebook", palette=sns.color_palette("colorblind"), style="whitegrid"
@@ -179,6 +216,8 @@ def plot_clf_model_displays(
     subset_dir=None,
     sample_weight=None,
     display_labels=None,
+    frozen=False,
+    axes_list=(None, None, None, None),
 ):
     """
 
@@ -205,17 +244,23 @@ def plot_clf_model_displays(
     -------
 
     """
+    if all([a is None for a in axes_list]):
+        rcd, det, lcd, cmd = axes_list
+
+    class_weights = compute_sample_weight("balanced", y=train_labels)
+    if estimator is None:
+        return False
     if display_labels is None:
         display_labels = [str(s) for s in train_labels.unique()]
     if is_regressor(estimator):
         cv = KFold(shuffle=True, random_state=0)
     else:
         cv = StratifiedKFold(shuffle=True, random_state=0)
-    try:
+    if HasMethods("n_jobs").is_satisfied_by(estimator):
         estimator = estimator.set_params({"n_jobs": 1})
-    except:
+    else:
         estimator = estimator
-    if probs is None and preds is None:
+    if False and (probs is None and not frozen):
         cv_results = cross_val_predict(
             estimator=clone(estimator),
             X=train_df,
@@ -232,42 +277,77 @@ def plot_clf_model_displays(
             os.makedirs(subset_dir, exist_ok=True)
             probs.to_csv(
                 "{}{}_{}.csv".format(
-                    subset_dir, estimator_name, select_params["score_func"]
+                    subset_dir, estimator_name, select_params["model_output"]
                 )
             )
+    if False and (preds is None and not frozen):
+        cv_results = cross_val_predict(
+            estimator=estimator,
+            X=train_df,
+            y=train_labels,
+            cv=cv,
+            n_jobs=-2,
+            method="predict",
+            params={"sample_weight": sample_weight},
+        )
+        preds = pd.Series(cv_results, index=train_labels.index)
     # if sample_weight is not None and isinstance(sample_weight, pd.Series):
+    roc_ax = None
+    if preds is not None:
+        roc_ax = RocCurveDisplay.from_predictions(
+            y_true=train_labels,
+            y_pred=preds[train_labels.index],
+            pos_label=select_params["pos_label"],
+            name="DMSO Insolubles",
+            plot_chance_level=True,
+            despine=True,
+            ax=roc_ax,
+        )
+    else:
 
-    rcd = RocCurveDisplay.from_predictions(
-        train_labels,
-        probs,
-        pos_label=0,
-        name="DMSO Insolubles",
-        plot_chance_level=True,
-        sample_weight=sample_weight,
-    )
-    rcd.ax_.set(ylim=[0, 1.0])
-    rcd.ax_.set(xlim=[0, 1.0])
-    rcd.figure_.set_dpi(300)
+        roc_ax = RocCurveDisplay.from_estimator(
+            estimator=estimator.fit(train_df, train_labels),
+            X=train_df,
+            y=train_labels,
+            sample_weight=sample_weight,
+            pos_label=select_params["pos_label"],
+            name="DMSO Insolubles",
+            plot_chance_level=True,
+            despine=True,
+            ax=roc_ax,
+        )
+    fig = roc_ax.figure_
+    fig.set_dpi(300)
+    # rcd.ax_.set(ylim=[0, 1.0])
+    # rcd.ax_.set(xlim=[0, 1.0])
     if subset_dir is not None:
-        rcd.figure_.set_dpi(300)
-        rcd.figure_.savefig("{}RocCurve_{}.png".format(subset_dir, estimator_name))
-    det = DetCurveDisplay.from_predictions(
-        train_labels,
-        probs,
-        pos_label=0,
-        name="DMSO Insolubles",
-        sample_weight=sample_weight,
-    )
-    # det.ax_.set(ylim=[0, 1.0])
-    # det.ax_.set(xlim=[0, 1.0])
-    det.figure_.set_dpi(300)
-    # det.ax_.set(xlim=[0.0, 1.0], ylim=[0.0, 1.0])
+        fig.savefig("{}RocCurve_{}.png".format(subset_dir, estimator_name))
+    if preds is not None:
+        det = DetCurveDisplay.from_predictions(
+            y_true=train_labels,
+            y_pred=preds,
+            pos_label=select_params["pos_label"],
+            name="DMSO Insolubles",
+            sample_weight=sample_weight,
+        )
+    else:
+        det = DetCurveDisplay.from_estimator(
+            estimator=estimator,
+            X=train_df,
+            y=train_labels,
+            sample_weight=sample_weight,
+            name="DMSO_Insolubles",
+        )
+    # det.figure_.set_dpi(300)
+    # det.ax_.set(ylim=[-0.01, 1.01])
+    # det.ax_.set(xlim=[-0.01, 1.01])
     if subset_dir is not None:
         det.figure_.savefig("{}DetCurve_{}.png".format(subset_dir, estimator_name))
     if is_classifier(estimator):
-        if preds is None:
+        cmd_fig, cmd_ax = plt.subplots()
+        if preds is None and frozen:
             preds = cross_val_predict(
-                estimator=clone(estimator),
+                estimator=estimator,
                 X=train_df,
                 y=train_labels,
                 cv=cv,
@@ -275,33 +355,46 @@ def plot_clf_model_displays(
                 method="predict",
                 params={"sample_weight": sample_weight},
             )
-        cmd = ConfusionMatrixDisplay.from_predictions(
-            y_true=train_labels,
-            y_pred=preds,
-            display_labels=display_labels,
-            normalize="true",
-            cmap="Blues",
-        )
-        cmd.figure_.set_dpi(300)
+            cmd = ConfusionMatrixDisplay.from_predictions(
+                y_true=train_labels,
+                y_pred=preds,
+                display_labels=display_labels,
+                normalize="true",
+                cmap="Blues",
+                ax=cmd_ax,
+            )
+        else:
+            cmd = ConfusionMatrixDisplay.from_estimator(
+                estimator=estimator,
+                X=train_df,
+                y=train_labels,
+                normalize="true",
+                cmap="Blues",
+                display_labels=display_labels,
+                ax=cmd_ax,
+            )
         if subset_dir is not None:
-            cmd.figure_.savefig(
+            cmd_fig.savefig(
                 "{}confusion_matrix_{}.png".format(subset_dir, estimator_name)
             )
-    lcd = LearningCurveDisplay.from_estimator(
-        estimator=clone(estimator),
-        X=train_df,
-        y=train_labels,
-        train_sizes=np.linspace(0.05, 0.9, num=15),
-        scoring=select_params["scorer"],
-        n_jobs=-2,
-        shuffle=True,
-        random_state=0,
-        score_name=select_params["score_name"],
-    )
-    lcd.figure_.set_dpi(300)
-    lcd.ax_.set(ylim=[0, 1.0])
-    if subset_dir is not None:
-        lcd.figure_.savefig("{}lcd_{}.png".format(subset_dir, estimator_name))
+    if not frozen:
+        lcd = LearningCurveDisplay.from_estimator(
+            estimator=clone(estimator),
+            X=train_df,
+            y=train_labels,
+            train_sizes=np.linspace(0.025, 0.95, num=20),
+            scoring=select_params["scorer"],
+            n_jobs=-4,
+            shuffle=True,
+            # random_state=0,
+            score_name=select_params["score_name"],
+        )
+        lcd.figure_.set_dpi(300)
+        # lcd.ax_.set(ylim=[-0.01, 1.01])
+        if subset_dir is not None:
+            lcd.figure_.savefig("{}lcd_{}.png".format(subset_dir, estimator_name))
+    else:
+        lcd = None
     return rcd, det, lcd, cmd
 
 
@@ -384,53 +477,52 @@ def _prep_for_proba_pairs(labels, subset_predicts, select_params):
     )
     size = (1 - labels.copy()).clip(lower=0.5) ** 4
     alpha = (1 - labels.copy()).clip(lower=0.1, upper=1.00)
-    pred_df = labels.copy()
-    pred_df.name = "True"
+    true_named = labels.copy()
+    true_named.name = "True"
     data_list = list()
-    for s_i, sers in enumerate(subset_predicts[n]):
+    for s_i, sers in enumerate(subset_predicts):
         # print(pd.concat(sers["predict_proba"]["test"]).iloc[:, 0], flush=True)
-        try:
-            df = pd.concat(sers[select_params["score_func"]]["test"])
+        if isinstance(sers[select_params["model_output"]]["test"], (list, tuple)):
+            df = pd.concat(sers[select_params["model_output"]]["test"])
             if len(df.shape) > 1:
                 print(df)
                 df = df.iloc[:, 0]
+        if isinstance(
+            sers[select_params["model_output"]]["test"], (pd.Series, pd.DataFrame)
+        ):
+            df = sers[select_params["model_output"]]["test"]
             # df = pd.concat([s.iloc[:, 0] for s in sers["predict_proba"]["train"]])
             # df.columns = ["{}_{}".format(s_i, f_i) for f_i in np.arange(df.shape[1])]
             # print(df.head(), df.shape)
-        except TypeError:
+        else:
             try:
                 print("Exception caught!\n\n\n")
                 print(sers)
                 df = pd.concat(
                     [
                         pd.concat(
-                            [a[select_params["score_func"]]["train"] for a in sers]
+                            [a[select_params["model_output"]]["train"] for a in sers]
                         )
                     ],
                     axis=1,
                 )
             except TypeError:
-                df = pd.concat([a for a in sers[select_params["score_func"]]["train"]])
+                df = pd.concat(
+                    [a for a in sers[select_params["model_output"]]["train"]]
+                )
+        df = scoring.correct_class_probs(y_true=labels, y_proba=df).squeeze()
         df.name = "Subset_{}".format(s_i)
         data_list.append(df.sort_index())
-    data_list.append(pred_df.sort_index())
-    pred_df = pd.concat(
-        data_list, axis=1
-    )  # , left_index=True, right_index=True, how="inner")
-    ### Rework this. Made to avoid circular import.
+    data_list.append(true_named.sort_index())
+    pred_df = pd.concat(data_list, axis=1)
+    # , left_index=True, right_index=True, how="inner")
+    # Rework this. Made to avoid circular import.
     # resid_df = _make_proba_residuals(pred_df, labels=labels.loc[pred_df.index])
     resid = dict()
     for col_a in np.arange(pred_df.shape[1]):
         for col_b in np.arange(col_a + 1, pred_df.shape[1]):
             resid[(col_a, col_b)] = pred_df.iloc[:, col_a] - pred_df.iloc[:, col_b]
     resid_df = pd.DataFrame.from_dict(resid)
-
-    # pprint.pp(resid_df)
-    # full_kde = True
-    # full_pred = pred_df.copy()
-    sample_fraction = 0.5
-    # pred_df = pred_df.groupby(["True"], observed=True).sample(frac=sample_fraction, replace=True)
-    # print(pred_df["True"])
     flat_resids = resid_df.copy()
     flat_resids.columns = resid_df.columns.map(
         dict(enumerate(pred_df.drop(columns="True").columns))
@@ -444,52 +536,8 @@ def _prep_for_proba_pairs(labels, subset_predicts, select_params):
     # pg.map_lower(sns.kdeplot, data=flat_resids[flat_resids["True"] == 0].drop(columns="True"), size=2.0, alpha=1.0)
     # print(pred_df)
     pred_long = pred_df.melt(id_vars="True")
-    # print(pred_long)
-    fg = sns.FacetGrid(
-        pred_long, row="variable", col="variable", margin_titles=True, sharey=False
-    )
-    for i, j in itertools.combinations(pred_df.drop(columns="True").columns, r=2):
-        for dg in pred_df["True"].unique():
-            data_group = pred_df.loc[pred_df["True"] == dg]
-            # print(col[0]*(pred_df.shape[1] - 1) + col[1] - 1)
-            ax1 = sns.scatterplot(
-                x=data_group[i],
-                y=data_group[i] - data_group[j],
-                ax=fg.facet_axis(
-                    data_group.columns.get_loc(i), data_group.columns.get_loc(j)
-                ),
-                size=0.01,
-                legend=False,
-            )
-            ax1.set(xlim=(0.0, 1.0))
-            ax1.set(ylim=(-1.0, 1.0))
-            ax2 = sns.scatterplot(
-                x=data_group[i],
-                y=data_group[j],
-                ax=fg.facet_axis(
-                    data_group.columns.get_loc(j), data_group.columns.get_loc(i)
-                ),
-                size=0.01,
-                legend=False,
-            )
-            ax2.set(xlim=(0.0, 1.0))
-            ax2.set(ylim=(0.0, 1.0))
-    for i in pred_df.drop(columns="True").columns.tolist()[::-1]:
-        sns.histplot(
-            pred_long[pred_long["variable"] == i].drop(columns="variable"),
-            x="value",
-            hue="True",
-            stat="density",
-            common_norm=False,
-            common_bins=True,
-            ax=fg.facet_axis(pred_df.columns.get_loc(i), pred_df.columns.get_loc(i)),
-            legend=False,
-        )
-        # fg.fig.axes[col[0]+ col[1] - 1].scatter(x=pred_df[col[0]], y=flat_resids[col])
-        # pg = pg.fig.axes[col[0]*(resid_df.shape[1] + 1) + col[1]].scatter(x=pred_df[col[0]], y=flat_resids[col])
-        # pg = pg.map_upper(sns.scatterplot, data=flat_resids, size=0.75, alpha=.6)
-    plt.close()
-    return fg
+    print(pred_df)
+    return pred_df, pred_long
 
 
 def plot_proba_distances(
@@ -500,7 +548,7 @@ def plot_proba_distances(
         triple_tup = [
             (name, name_model_dict[name], subset) for subset in model_subsets_dict[name]
         ]
-    model_dist_plots = samples.cv_model_prediction_distance(
+    model_dist_plots = scoring_metrics.cv_model_prediction_distance(
         feature_df, labels, triple_tup
     )
     if path_dict is not None:
