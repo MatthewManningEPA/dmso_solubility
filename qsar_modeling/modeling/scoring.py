@@ -136,14 +136,7 @@ def score_cv_results(
     score_dict = dict.fromkeys(score_func_dict.keys(), dict())
     score_df_dict = dict.fromkeys(score_func_dict.keys())
     for score_name, score_func in score_func_dict.items():
-        score_keys = signature(score_func).parameters.keys()
-        if "y_proba" in score_keys:
-            output_name = "predict_proba"
-        # elif "y_pred" in score_keys:
-        elif "y_pred" in score_keys:
-            output_name = "predict"
-        else:
-            output_name = "predict"
+        output_name = get_input_for_scorer(score_func)
         for split_name, result in results_dict[output_name].items():
             score = list()
             if by_fold:
@@ -198,6 +191,18 @@ def score_cv_results(
         score_df_dict[score_name].insert(loc=0, column="Metric", value=score_name)
     score_df = pd.concat(score_df_dict.values(), ignore_index=True)
     return score_df
+
+
+def get_input_for_scorer(score_func):
+    score_func = signature(score_func).parameters.keys()
+    if "y_proba" in score_func:
+        output_name = "predict_proba"
+    # elif "y_pred" in score_keys:
+    elif "y_pred" in score_func:
+        output_name = "predict"
+    else:
+        output_name = "predict"
+    return output_name
 
 
 def proba_from_meta_estimator(
@@ -327,7 +332,7 @@ def cv_model_generalized(
     -------
     results_dict : dict[str, dict[str, dict[str, list[pd.Series | pd.DataFrame]]]], nested dictionary of {randomization: {callable name: {"test" | "train: list[pd.Series]}}}, where the list contain results from callable over all CV folds.
     melted_dict : dict[str, pd.DataFrame], Dictionary of long-form DataFrames. Same content as results. keys=methods.
-    Columns: ["CV_Fold", "Split", "Label", "INCHI_KEY", RESULTS]
+    Columns: ["CV_Fold", "Split", "Label", "INCHI_KEY", RESULTS, "True"]
     test_idx_list: tuple[pd.Index], tuple of indices in the order in which they appear during cross-validation
 
     Example Usage: Scoring
@@ -391,7 +396,7 @@ def cv_model_generalized(
             if k != "self" and k != "X"
         ]
     # results = dict([(k[0], splits_dictcopy()) for k in return_list])
-    assert isinstance(feature_df, pd.DataFrame)
+    assert isinstance(feature_df, pd.DataFrame) and not feature_df.empty
     for o_name in order_names:
         sc_dict[o_name] = list()
         if return_train:
@@ -414,8 +419,8 @@ def cv_model_generalized(
         else:
             split_X["train"] = train_X
             split_X["test"] = test_X
-        assert not split_X["train"].empty
         assert isinstance(split_X["train"], pd.DataFrame)
+        assert not split_X["train"].empty
         test_idx_list.append(test_y_orig.index)
         for ran, r_name in zip(label_orders, order_names):
             if ran:
