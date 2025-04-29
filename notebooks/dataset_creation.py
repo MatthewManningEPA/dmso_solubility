@@ -17,7 +17,6 @@ import build_preprocessor
 import correlation_filter
 import data_cleaning
 import padel_categorization
-from archive.grove_feature_selection import padel_candidate_features
 from correlation_filter import get_correlations
 from descriptor_processing import get_api_descriptors, get_standardizer
 from dmso_utils.data_tools import get_conversions, get_query_data
@@ -824,3 +823,70 @@ def _set_paths(parent_dir, data_dir, select_params):
     )
     os.makedirs(path_dict["exp_dir"], exist_ok=True)
     return path_dict
+
+
+def padel_candidate_features(short=True, included=None):
+    all_features = padel_categorization.get_padel_names(
+        length="short", classes=included
+    )
+    feature_list = list()
+    classes = [
+        "Connectivity descriptors",
+        "BCUT descriptors",
+        "Connectivity descriptors",
+        "Kappa descriptors",
+        "Quantum chemical descriptors",
+    ]
+    types = [
+        "AcidicGroupCountDescriptor",
+        "ALOGPDescriptor",
+        "AMRDescriptor",
+        "ConstitutionalDescriptor",
+        "CrippenDescriptor",
+        "LargestChainDescriptor",
+        "LongestAliphaticChainDescriptor",
+        "LargestPiSystemDescriptor",
+        "RotatableBondsCountDescriptor",
+        "HBondAcceptorCountDescriptor",
+        "HBondDonorCountDescriptor",
+        "McGowanVolumeDescriptor",
+        "TPSADescriptor",
+        "WeightDescriptor",
+        "EccentricConnectivityIndexDescriptor",
+        "ExtendedTopochemicalAtomDescriptor",
+        "DetourMatrixDescriptor",
+        "TopologicalChargeDescriptor",
+        "TopologicalDescriptor",
+        "TopologicalDistanceMatrixDescriptor",
+        "WienerNumbersDescriptor",
+        "VABCDescriptor",
+        "WeightedPathDescriptor",
+    ]
+    if included is None:
+        included = [
+            "nHBint",
+            "SHBint",
+            "minHB",
+            "minwHB",
+            "maxHB",
+            "maxwHB",
+            "LipoaffinityIndex",
+            "DELS",
+            "MAXD",
+        ]
+    if short:
+        padel_col = "Descriptor name"
+    else:
+        padel_col = "Description"
+    for c in classes:
+        feature_list.extend(
+            all_features[all_features["Extended class"] == c][padel_col].to_list()
+        )
+    for t in types:
+        feature_list.extend(
+            all_features[all_features["Type"] == t][padel_col].to_list()
+        )
+    for dn in all_features["Descriptor name"].to_list():
+        if any([padel_name in dn for padel_name in included]):
+            feature_list.append(dn)
+    return feature_list

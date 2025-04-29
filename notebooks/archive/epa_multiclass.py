@@ -22,6 +22,7 @@ from sklearn.model_selection import (
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 
 import build_preprocessor
+import dataset_creation
 import fuzzy_controller
 import padel_categorization
 from archive import vapor_pressure_selection
@@ -429,7 +430,7 @@ def train_multilabel_models(epa_df, epa_labels, epa_scorer, mc_path):
     )
     train_df = epa_df.loc[train_labels.index]
     test_df = epa_df.loc[test_labels.index]
-    search_features = vapor_pressure_selection.padel_candidate_features()
+    search_features = dataset_creation.padel_candidate_features()
     print("{} features to select from.".format(len(search_features)))
     short_to_long = padel_categorization.padel_convert_length().to_dict()
     # test_padel_conversion(search_features, short_to_long)

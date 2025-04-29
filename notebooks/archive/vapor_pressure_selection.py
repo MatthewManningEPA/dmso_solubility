@@ -18,8 +18,8 @@ from sklearn.model_selection import (
 from sklearn.pipeline import clone
 
 import sample_clusters
-from archive.grove_feature_selection import padel_candidate_features
 from build_preprocessor import get_standard_preprocessor
+from dataset_creation import padel_candidate_features
 from fuzzy_controller import select_feature_subset
 
 mcc = make_scorer(matthews_corrcoef)
