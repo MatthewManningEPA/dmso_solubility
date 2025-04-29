@@ -501,6 +501,14 @@ def _get_prepped_enamine(select_params, path_dict, split_dir=None, dataset=None)
     )
 
 
+def get_original_enamine(use_cols=["SMILES", "DMSO Solubility", "INCHI_KEY"]):
+    enamine_path = "{}enamine_data/tetko_enamine_training_download.csv".format(
+        os.environ.get("DATA_DIR")
+    )
+    all_enamine = pd.read_csv(enamine_path, usecols=use_cols)
+    return all_enamine
+
+
 def _get_solubility_data(
     path_dict,
     select_params,
@@ -526,32 +534,39 @@ def _get_solubility_data(
             raise IOError
     else:
         # Get data
-        max_conc, raw_df, sid_to_inchikey_mapper = _get_unprocess_new_epa_data(
+        max_conc, smiles_df, sid_to_inchikey_mapper = _get_unprocess_new_epa_data(
             path_dict
         )
+        print(max_conc, smiles_df)
         # Discretize labels and map
         epa_labels = label_solubility_clusters(
-            max_conc[raw_df.index], conc_splits=conc_splits
+            max_conc[smiles_df.index], conc_splits=conc_splits
         )
-        raw_df.index = raw_df.index.map(
+        smiles_df.index = smiles_df.index.map(
             lambda x: safe_mapper(x, sid_to_inchikey_mapper), na_action="ignore"
         )
-        train_raw_df, test_raw_df = train_test_split(
-            raw_df, test_size=0.2, stratify=epa_labels.squeeze(), random_state=0
+        train_smiles_df, test_smiles_df = train_test_split(
+            smiles_df, test_size=0.2, stratify=epa_labels.squeeze(), random_state=0
         )
-
-        train_labels = epa_labels[train_raw_df.index]
-        test_labels = epa_labels[test_raw_df.index]
+        train_smiles_path = "{}train_epa_queried.pkl".format(os.environ.get("DATA_DIR"))
+        test_smiles_path = "{}test_epa_queried.pkl".format(os.environ.get("DATA_DIR"))
+        with open(train_smiles_path, "wb") as f:
+            pickle.dump(train_smiles_df, f)
+        with open(test_smiles_path, "wb") as f:
+            pickle.dump(test_smiles_df, f)
+        print("SMILES data pickled!")
+        train_labels = epa_labels[train_smiles_df.index]
+        test_labels = epa_labels[test_smiles_df.index]
         if preprocess:
             preprocessor, scaler = build_preprocessor.get_standard_preprocessor(
                 transform_func="asinh", corr_params=select_params
             )
-            train_df = preprocessor.fit_transform(train_raw_df, train_labels)
-            test_df = preprocessor.transform(test_raw_df)
+            train_df = preprocessor.fit_transform(train_smiles_df, train_labels)
+            test_df = preprocessor.transform(test_smiles_df)
         else:
             preprocessor = None
-            train_df = train_raw_df
-            test_df = test_raw_df
+            train_df = train_smiles_df
+            test_df = test_smiles_df
         best_corrs = correlation_filter.calculate_correlation(
             train_df, train_labels, method=select_params["corr_method"]
         )
@@ -588,7 +603,7 @@ def _get_new_epa_data_split():
 
 
 def _get_unprocess_new_epa_data(path_dict):
-    insol_labels, maxed_sol_labels, sol100_labels = get_query_data()
+    insol_labels, maxed_sol_labels, _ = get_query_data()
     combo_labels, convert_df = get_conversions(
         maxed_sol_labels, path_dict["lookup_path"]
     )
@@ -601,7 +616,7 @@ def _get_unprocess_new_epa_data(path_dict):
     max_conc.index = max_conc.index.map(
         lambda x: safe_mapper(x, sid_to_key), na_action="ignore"
     )
-    return max_conc, sid_to_key
+    return max_conc, smiles_df, sid_to_key
 
 
 def label_solubility_clusters(labels, conc_splits=(9.9), algo=False):
