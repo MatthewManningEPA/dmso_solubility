@@ -41,7 +41,10 @@ from dataset_creation import (
     preprocess_data,
 )
 from epa_enamine_visualizer import plot_clf_model_displays, plot_model_scores
-from fuzzy_controller import select_subsets_from_model
+from fuzzy_controller import (
+    create_submodels,
+    save_plot_submodel_results,
+)
 from scoring_metrics import get_confusion_weights
 
 
@@ -187,17 +190,27 @@ def main():
     logger.debug("Selecting from {} features.".format(len(search_features)))
     model_dir = path_dict["exp_dir"]
     os.makedirs(model_dir, exist_ok=True)
-
-    # scores, subsets, outputs, weights =
-    select_subsets_from_model(
+    fuzzy_list, ffh_list = create_submodels(
+        estimator=estimator,
         feature_df=train_df,
         labels=train_labels,
-        select_params=select_params,
-        estimator=estimator,
         estimator_name=estimator_name,
-        model_dir=model_dir,
+        select_params=select_params,
         path_dict=path_dict,
+        save_dir=model_dir,
     )
+    features_list, pred_list, prob_list, score_list, weights_list = (
+        save_plot_submodel_results(
+            fuzzy_list=fuzzy_list,
+            ffh_list=ffh_list,
+            feature_df=train_df,
+            labels=train_labels,
+            estimator_name=estimator_name,
+            select_params=select_params,
+            save_dir=model_dir,
+        )
+    )
+
     exit()
     """
     if False and (
