@@ -620,11 +620,7 @@ def relative_brier_score(
     sample_prop = proba_diff_thresh.shape[0] / y_true.shape[0]
     score = normalized / np.sqrt(sample_prop)
     score_samples = proba_diff_thresh.index.to_series()
-    print(
-        "{} improvements in probability for score of {}.".format(
-            best_brier, score_long_form()
-        )
-    )
+    print("{} improvements in probability for score of {}.".format(best_brier, score))
     return score, score_samples
 
 
