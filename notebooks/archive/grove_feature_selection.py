@@ -20,9 +20,9 @@ from sklearn.tree import (
 )
 from sklearn.utils import compute_sample_weight
 
-import padel_categorization
 import sample_clusters
 from correlation_filter import cross_corr_filter
+from dataset_creation import padel_candidate_features
 from vif import repeated_stochastic_vif
 
 mcc = make_scorer(balanced_accuracy_score)
@@ -489,73 +489,6 @@ def membership(feature_df, labels, grove_cols, search_dir):
         accepted_features, orient="index", columns=["Insoluble", "Soluble"]
     ).to_csv("{}feature_names.csv".format(search_dir), sep="\t")
     return member_dict
-
-
-def padel_candidate_features(short=True, included=None):
-    all_features = padel_categorization.get_padel_names(
-        length="short", classes=included
-    )
-    feature_list = list()
-    classes = [
-        "Connectivity descriptors",
-        "BCUT descriptors",
-        "Connectivity descriptors",
-        "Kappa descriptors",
-        "Quantum chemical descriptors",
-    ]
-    types = [
-        "AcidicGroupCountDescriptor",
-        "ALOGPDescriptor",
-        "AMRDescriptor",
-        "ConstitutionalDescriptor",
-        "CrippenDescriptor",
-        "LargestChainDescriptor",
-        "LongestAliphaticChainDescriptor",
-        "LargestPiSystemDescriptor",
-        "RotatableBondsCountDescriptor",
-        "HBondAcceptorCountDescriptor",
-        "HBondDonorCountDescriptor",
-        "McGowanVolumeDescriptor",
-        "TPSADescriptor",
-        "WeightDescriptor",
-        "EccentricConnectivityIndexDescriptor",
-        "ExtendedTopochemicalAtomDescriptor",
-        "DetourMatrixDescriptor",
-        "TopologicalChargeDescriptor",
-        "TopologicalDescriptor",
-        "TopologicalDistanceMatrixDescriptor",
-        "WienerNumbersDescriptor",
-        "VABCDescriptor",
-        "WeightedPathDescriptor",
-    ]
-    if included is None:
-        included = [
-            "nHBint",
-            "SHBint",
-            "minHB",
-            "minwHB",
-            "maxHB",
-            "maxwHB",
-            "LipoaffinityIndex",
-            "DELS",
-            "MAXD",
-        ]
-    if short:
-        padel_col = "Descriptor name"
-    else:
-        padel_col = "Description"
-    for c in classes:
-        feature_list.extend(
-            all_features[all_features["Extended class"] == c][padel_col].to_list()
-        )
-    for t in types:
-        feature_list.extend(
-            all_features[all_features["Type"] == t][padel_col].to_list()
-        )
-    for dn in all_features["Descriptor name"].to_list():
-        if any([padel_name in dn for padel_name in included]):
-            feature_list.append(dn)
-    return feature_list
 
 
 def main():
