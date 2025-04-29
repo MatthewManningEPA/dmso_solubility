@@ -275,7 +275,7 @@ def calculate_proba_from_model(
             sample_weight=weights,
         )
         results_list.append(results)
-    return [pd.concat(r[select_params["score_func"]]["test"]) for r in results_list]
+    return [pd.concat(r[select_params["model_output"]]["test"]) for r in results_list]
 
 
 def scramble_classes(labels, random_state=None):
