@@ -281,6 +281,17 @@ def load_feature_rankings(filepath, threshold=None):
 
 
 def get_query_data():
+    """
+
+    Returns
+    -------
+    insol_df : pd.DataFrame, index=DTXSID, columns = ["cheminv_dmsoinsolub", "cheminv_dmsosolub_low"]
+        Insoluble compounds as detected Invotech
+    maxed_sol_df : pd.DataFrame, index=DTXSID,
+        Maximum achieved solubility with the highest concentration attempted
+    sol100_df : pd.DataFrame
+        Deprecated
+    """
     data_dir = "{}db_queries_12_2024/".format(os.environ.get("DATA_DIR"))
     insol_path = "{}chemtrack_dmso_insoluble_03DEC2024.csv".format(data_dir)
     sol100_path = "{}chemtrack_dmso_max_solubility_17DEC2024.csv".format(data_dir)
@@ -364,12 +375,6 @@ def get_conversions(compound_df, lookup_path=None):
 
 
 def data_check():
-    from dmso_utils.data_tools import (
-        load_all_descriptors,
-        load_combo_data,
-        load_training_data,
-    )
-
     all_X = load_all_descriptors()
     print("Shapes of all descriptor DFs")
     print(all_X.shape)
