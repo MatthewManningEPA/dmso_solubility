@@ -1,4 +1,5 @@
 import itertools
+import json
 import os
 
 import pandas as pd
@@ -21,18 +22,24 @@ import padel_categorization
 
 def get_api_descriptors(smiles_ser, desc_path, desc_set="padel"):
     # Wrapper function that gets descriptors for many compounds.
+    desc_list = list()
+    inchi_dict = dict()
+    for v, k in smiles_ser.items():
+        print(v, k)
+        inchi_dict[str(k)] = str(v)
+    print([inchi_dict.items()][0])
     desc_grabber = DescriptorRequestor.DescriptorGrabber(
         desc_set=desc_set, timeout=(30, 600)
     )
-    desc_list = list()
-    inchi_dict = pd.Series(smiles_ser.index.values, index=smiles_ser.to_dict())
-    with open(desc_path, "a"):
+    with open(desc_path, "a") as f:
         for desc, smile in desc_grabber.bulk_epa_call(smiles_ser.tolist()):
+            print(smile, inchi_dict[smile])
             if not isinstance(desc, dict):
-                exit()
+                break
             else:
-                desc.update(("FOREIGN_KEY", inchi_dict[smile]))
+                desc["FOREIGN_KEY"] = inchi_dict[smile]
                 desc_list.append(desc)
+            f.write(json.dumps(desc))
     return pd.DataFrame.from_records(desc_list)
 
 
@@ -274,7 +281,10 @@ def get_epa_descriptors(
     desc_df: DataFrame, sklearn-compatible input of descriptors only.
     info_df: DataFrame, normalized output from API call, without descriptors
     failed_list: list, inputs that did not return a valid result from API
-
+    """
+    if desc_type != "padel":
+        raise NotImplementedError
+    """
     API schema
     {
         "chemicals": ["string"],
@@ -321,11 +331,18 @@ def get_epa_descriptors(
             padel_names = padel_categorization.get_full_padel_names()
         else:
             padel_names = padel_categorization.get_short_padel_names()
+        desc_df = pd.DataFrame.from_dict(
+            data=desc_dict, orient="index", columns=padel_names
+        )
+    else:
+        try:
+            desc_df = pd.DataFrame.from_dict(data=desc_dict)
+            print(desc_df)
+        except:
+            desc_df = desc_dict
     info_df = pd.json_normalize(info_list)
     info_df.set_index(keys="inchiKey", inplace=True)
     # TODO: Is this drop needed or even valid?
     # info_df.drop(columns=padel_names, inplace=True, errors="ignore")
-    desc_df = pd.DataFrame.from_dict(
-        data=desc_dict, orient="index", columns=padel_names
-    )
+
     return desc_df, info_df, failed_list
