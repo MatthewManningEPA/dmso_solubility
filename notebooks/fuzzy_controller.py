@@ -236,7 +236,7 @@ def create_submodels(
         )
         ffh.working_dir = epoch_dir
         ffh.save_model_results(
-            dir=ffh.working_dir,
+            save_dir=ffh.working_dir,
             best_features=fuzz.best_subset,
             label_corr=fuzz.label_corr,
             pair_corr=fuzz.cross_corr,
@@ -266,8 +266,9 @@ def create_submodels(
             )
             updated_prior_probs.append(submodel.best_preds)
         prior_probs = copy.deepcopy(updated_prior_probs)
+
     return fuzzy_list, ffh_list
-    # cv_score_df = pd.concat(score_df_list)
+    # TODO: Fix this plotting function.
     # name_distplot_dict = plot_proba_distances(feature_df, labels, model_subsets_dict, name_model_dict)
 
 
@@ -280,11 +281,10 @@ def save_plot_submodel_results(
         list(),
         list(),
     )
-    predicts_list.append()
     estimator_list = list()
     score_df_list = list()
-    pred_list, prob_list = list(), list()
-    model_tuple_list = list()
+    pred_concat_list, prob_concat_list = list(), list()
+    cv_models_list = list()
     for i_submodel, (ffh, submodel) in enumerate(zip(ffh_list, fuzzy_list)):
         ffh.working_dir = "{}final/".format(save_dir)
         subset_scores = submodel.subset_scores
@@ -292,20 +292,25 @@ def save_plot_submodel_results(
         weights_list.append(submodel.sample_weight)
         best_features = submodel.best_subset
         subsets_list.append(best_features)
-        best_estimator = submodel.best_model
-        if best_estimator is None:
-            best_estimator = submodel.freeze_best()
+        # best_estimator = submodel.best_model
+        # if best_estimator is None:
+        best_estimator = submodel.freeze_best()
         estimator_list.append(best_estimator)
         predicts_list.append(
             {select_params["model_output"]: {"test": submodel.best_preds}}
         )
-        frozen, y_pred, y_prob = submodel.freeze_cv_best(cv=select_params["cv"])
-        model_tuple_list.append(frozen)
-        pred_list.append(y_pred)
-        prob_list.append(y_prob)
+        model_results = submodel.freeze_cv_best(model="best")  # cv=select_params["cv"])
+        print(list(zip(model_results)))
+        print([len(m) for m in model_results])
+        print(list(zip(model_results)))
+        frozen, y_list, y_pred, y_prob = list(zip(*model_results))
+        cv_models_list.append(frozen)
+        pred_concat_list.append(pd.concat(y_pred))
+        prob_concat_list.append(pd.concat(y_prob))
         ffh.save_model_results(
+            save_dir=ffh.working_dir,
             i=i_submodel,
-            best_features=report_best_features(best_features),
+            best_features=best_features,
             frozen_model=best_estimator,
         )
         """
@@ -364,8 +369,8 @@ def save_plot_submodel_results(
         select_params=select_params,
         estimator_name=estimator_name,
         estimator_list=estimator_list,
-        preds_list=pred_list,
-        probs_list=prob_list,
+        preds_list=pred_concat_list,
+        probs_list=prob_concat_list,
         best_features_list=subsets_list,
         save_dir="{}final/".format(save_dir),
         save_path="{}subset_scores.png".format(save_dir),
@@ -373,7 +378,7 @@ def save_plot_submodel_results(
     )
     pg = _plot_proba_pairs(labels, predicts_list, select_params)
     pg.savefig("{}pair_proba_grid.png".format(save_dir), dpi=300)
-    return subsets_list, pred_list, prob_list, score_list, weights_list
+    return subsets_list, pred_concat_list, prob_concat_list, score_list, weights_list
 
 
 """
