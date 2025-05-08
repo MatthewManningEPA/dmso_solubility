@@ -104,17 +104,17 @@ class FuzzyFileHandler:
 
     def save_model_results(
         self,
-        dir=None,
+        save_dir=None,
         i=None,
         best_features=None,
         frozen_model=None,
         label_corr=None,
         pair_corr=None,
     ):
-        if dir is None or isinstance(dir, int):
+        if save_dir is None or isinstance(save_dir, int):
             subset_paths = self.get_paths(i=i)
         else:
-            subset_paths = self.get_paths(subset_dir=dir)
+            subset_paths = self.get_paths(subset_dir=save_dir, i=i)
         if isinstance(best_features, (list, tuple, set)):
             pd.Series(best_features).to_csv(subset_paths["best_features"])
         elif isinstance(best_features, pd.Series):
@@ -125,7 +125,7 @@ class FuzzyFileHandler:
         if label_corr is not None:
             label_corr.to_csv(subset_paths["weighted_label"])
         if pair_corr is not None:
-            label_corr.to_csv(subset_paths["weighted_cross"])
+            pair_corr.to_csv(subset_paths["weighted_cross"])
 
     def save_cv_results(
         self,
