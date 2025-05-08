@@ -1,5 +1,6 @@
 import logging
 import os
+import pickle
 import pprint
 import warnings
 from functools import partial
@@ -13,8 +14,10 @@ from sklearn import clone
 from sklearn.base import is_classifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_selection import f_classif
+from sklearn.frozen import FrozenEstimator
 from sklearn.metrics import (
     balanced_accuracy_score,
+    brier_score_loss,
     make_scorer,
     matthews_corrcoef,
     mean_absolute_percentage_error,
@@ -28,9 +31,11 @@ from sklearn.model_selection import (
     ParameterGrid,
     StratifiedKFold,
 )
+from sklearn.utils import compute_sample_weight
 from sklearn.utils.validation import _check_y
 
 import cv_tools
+import fp_regressor
 import samples
 import scoring
 import scoring_metrics
@@ -139,13 +144,13 @@ def optimize_tree(feature_df, labels, model, scoring, cv, path_dict):
 
 def main():
     classification = True
-    dataset = "rus_enamine-50"
+    dataset = "all_dmso"
     frac_enamine = 0.5
-    rus = True
+    rus = False
     plot_all_feature_displays = True
-    estimator_name = "parallel_training"
-    n_subsets = 15
-    n_epochs = 10
+    estimator_name = "error_weighted_score"
+    n_subsets = 2
+    n_epochs = 2
     (
         data_tuple,
         select_params,
@@ -157,7 +162,13 @@ def main():
     select_params["n_subsets"] = n_subsets
     select_params["n_epochs"] = n_epochs
     train_df, train_labels, test_df, test_labels = data_tuple
-
+    model_dir = path_dict["exp_dir"]
+    os.makedirs(model_dir, exist_ok=True)
+    # Plot all features model.
+    path_dict["base_dir"] = "{}base_model/".format(path_dict["exp_dir"])
+    path_dict["base_model"] = "{}frozen_base_model.pkl".format(path_dict["base_dir"])
+    path_dict["base_weights"] = "{}/booster_weights.pkl".format(path_dict["base_dir"])
+    path_dict["base_probs"] = "{}/booster_probs.pkl".format(path_dict["base_dir"])
     (
         train_df,
         train_labels,
@@ -169,47 +180,98 @@ def main():
     ) = preprocess_data(
         (train_df, train_labels), (test_df, test_labels), select_params, path_dict
     )
-    print("Running model in directory: {}".format(path_dict["parent_dir"]))
-    # Plot all features model.
-    booster, booster_probs, booster_weights = train_base_model(
-        train_df=train_df,
-        train_labels=train_labels,
-        select_params=select_params,
-        path_dict=path_dict,
-        plot_all_feature_displays=plot_all_feature_displays,
-    )
-
-    select_params["base_weight"] = booster_weights
-    print(estimator_name)
     logger.debug(
         "Discretized Labels: Value Counts:\n{}".format(
             pprint.pformat(train_labels.value_counts())
         )
     )
+    print("Running model in directory: {}".format(path_dict["parent_dir"]))
     search_features = train_df.columns.tolist()
     logger.debug("Selecting from {} features.".format(len(search_features)))
-    model_dir = path_dict["exp_dir"]
-    os.makedirs(model_dir, exist_ok=True)
-    fuzzy_list, ffh_list = create_submodels(
-        estimator=estimator,
-        feature_df=train_df,
-        labels=train_labels,
-        estimator_name=estimator_name,
-        select_params=select_params,
-        path_dict=path_dict,
-        save_dir=model_dir,
-    )
-    features_list, pred_list, prob_list, score_list, weights_list = (
-        save_plot_submodel_results(
-            fuzzy_list=fuzzy_list,
-            ffh_list=ffh_list,
+
+    if (
+        not os.path.isfile(path_dict["base_model"])
+        or not os.path.isfile(path_dict["base_weights"])
+        or not os.path.isfile(path_dict["base_probs"])
+    ):
+        booster, booster_probs, booster_weights = train_base_model(
+            train_df=train_df,
+            train_labels=train_labels,
+            select_params=select_params,
+            path_dict=path_dict,
+            plot_all_feature_displays=plot_all_feature_displays,
+        )
+        with open(path_dict["base_model"], "wb") as f:
+            pickle.dump(FrozenEstimator(booster), f)
+        booster_weights.to_pickle(path_dict["base_weights"])
+        booster_probs.to_pickle(path_dict["base_probs"])
+    else:
+        with open(path_dict["base_model"], "rb") as f:
+            booster = pickle.load(f)
+        booster_weights = pd.read_pickle(path_dict["base_weights"])
+        booster_probs = pd.read_pickle(path_dict["base_probs"])
+    model_list = list()
+    if os.path.isdir("{}final/".format(path_dict["exp_dir"])):
+        model_list = fp_regressor.assemble_models(
+            final_path="{}final/".format(path_dict["exp_dir"]),
+            base_path=path_dict["base_dir"],
+        )
+    if len(model_list) <= n_subsets:
+        print(len(model_list))
+        fuzzy_list, ffh_list = create_submodels(
+            estimator=estimator,
             feature_df=train_df,
             labels=train_labels,
             estimator_name=estimator_name,
             select_params=select_params,
+            path_dict=path_dict,
             save_dir=model_dir,
         )
-    )
+        features_list, pred_list, prob_list, score_list, weights_list = (
+            save_plot_submodel_results(
+                fuzzy_list=fuzzy_list,
+                ffh_list=ffh_list,
+                feature_df=train_df,
+                labels=train_labels,
+                estimator_name=estimator_name,
+                select_params=select_params,
+                save_dir=model_dir,
+            )
+        )
+    for dev_X, dev_y, eval_X, eval_y in cv_tools.split_df(train_df, train_labels):
+        class_weights = compute_sample_weight(
+            class_weight="balanced",
+            y=train_labels,
+        )
+        # booster_weights = base_weights[train_labels.index]
+        sample_weight = booster_weights.loc[train_labels.index] * class_weights
+        gating_estimtor = fp_regressor.train_predict(
+            model_path=model_dir,
+            train_data=(dev_X, dev_y),
+            test_data=(eval_X, eval_y),
+            sample_weight=sample_weight,
+        )
+        eval_pred_proba = gating_estimtor.predict_proba(eval_X)
+        eval_pred = eval_pred_proba.where(lambda x: x < 0.5, [0, 1])
+        brier_loss = brier_score_loss(
+            eval_y, eval_pred_proba, sample_weight=sample_weight, pos_label=1
+        )
+        class_brier_loss = brier_score_loss(
+            eval_y, eval_pred_proba, sample_weight=class_weights, pos_label=1
+        )
+        boost_bal_acc = balanced_accuracy_score(
+            test_labels, eval_pred, sample_weight=booster_weights
+        )
+        boost_mcc = matthews_corrcoef(test_labels, eval_pred)
+        bal_acc = balanced_accuracy_score(test_labels, eval_pred)
+        mcc = matthews_corrcoef(test_labels, eval_pred)
+
+        print("Unweighted Balanced Accuracy: {:.5f}".format(bal_acc))
+        print("Unweighted MCC: {:.5f}".format(mcc))
+        print("Class-Weighted Brier Loss: {:.5f}".format(class_brier_loss))
+        print("Full-Weighted Brier Loss: {:.5f}".format(brier_loss))
+        print("Booster-weighted Balanced Accuracy: {:.5f}".format(boost_bal_acc))
+        print("Booster-weighted MCC: {:.5f}".format(boost_mcc))
 
     exit()
     """
@@ -282,9 +344,10 @@ def train_base_model(
     # Set initial sample weights to SAMME weights from boosting.
     custom = False
     booster_name = "extra"
-    booster_weight_path = "{}booster_weights.csv".format(path_dict["exp_dir"])
-    booster_prob_path = "{}booster_probs.csv".format(path_dict["exp_dir"])
-    booster_model = "{}booster_model.pkl".format(path_dict["exp_dir"])
+    base_dir = "{}/base_model/".format(path_dict["exp_dir"])
+    # path_dict["base_weights"] = "{}/booster_weights.pkl".format(base_dir)
+    # path_dict["base_probs"] = "{}/booster_probs.pkl".format(base_dir)
+    # path_dict["base_model"] = "{}/booster_model.pkl".format(base_dir)
     if booster_name == "hist_grad":
         booster_params = {
             "max_iter": 100,
@@ -332,15 +395,17 @@ def train_base_model(
         booster = None
         booster_weights = None
     if (
-        False
-        and os.path.isfile(booster_weight_path)
-        and os.path.isfile(booster_prob_path)
+        os.path.isfile(path_dict["base_weights"])
+        and os.path.isfile(path_dict["base_probs"])
+        and os.path.isfile(path_dict["base_model"])
     ):
-        probs = pd.read_csv(booster_prob_path)
-        booster_weights = pd.read_csv(booster_weight_path).squeeze()
+        probs = pd.read_pickle(path_dict["base_probs"]).squeeze()
+        booster_weights = pd.read_pickle(path_dict["base_weights"]).squeeze()
+        with open(path_dict["base_model"], "rb") as f:
+            booster = pickle.load(f)
         # samples.weight_by_proba(train_labels, probs, prob_thresholds=select_params["brier_clips"])
     elif True:
-        if weighted_booster and booster is not None and booster_name != "extra":
+        if weighted_booster and (booster is not None) and booster_name != "extra":
             onehot = pd.concat([1 - train_labels, train_labels], axis=1)
             cv_list, staged_df_list = list(), list()
             for dev_X, dev_y, eval_X, eval_y in cv_tools.split_df(
@@ -419,13 +484,14 @@ def train_base_model(
             probs=probs,
             prob_thresholds=select_params["brier_clips"],
         )
-        probs.to_csv(booster_prob_path, index_label="INCHI_KEY")
-
+        # probs.to_csv(path_dict["base_probs"], index_label="INCHI_KEY")
+        probs.to_pickle(path_dict["base_probs"])
+        booster_weights.to_pickle(path_dict["base_weights"])
     if plot_all_feature_displays:
         display_dir = "{}base_model/".format(path_dict["exp_dir"])
         os.makedirs(display_dir, exist_ok=True)
 
-        f_stats, f_pvals = f_classif(X=train_df, y=1 - train_labels[train_df.index])
+        f_stats, f_pvals = f_classif(X=train_df, y=1 - train_labels)
         f_logp = (
             pd.Series(f_pvals, index=train_df.columns)
             .sort_values()
