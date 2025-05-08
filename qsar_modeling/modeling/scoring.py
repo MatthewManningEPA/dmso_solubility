@@ -531,7 +531,7 @@ def score_long_form(func, x, true_col, data_cols=None, remove_cols=None, **kwarg
     return score
 
 
-def relative_brier_score(
+def score_weighted_brier(
     y_true,
     y_proba,
     y_prior=None,
@@ -544,10 +544,41 @@ def relative_brier_score(
     power=2,
     best_k=None,
 ):
+    return relative_brier_score(
+        y_true,
+        y_proba,
+        y_prior=y_prior,
+        clips=clips,
+        sample_weight=sample_weight,
+        class_weight=class_weight,
+        normalize=normalize,
+        improve_threshold=improve_threshold,
+        prob_thresholds=prob_thresholds,
+        power=power,
+        best_k=best_k,
+        miss_weighted=True,
+    )
+
+
+def relative_brier_score(
+    y_true,
+    y_proba,
+    y_prior=None,
+    clips=(0, 1.0),
+    sample_weight=None,
+    class_weight="balanced",
+    normalize="improved",
+    improve_threshold=(0.0, 1.0),
+    prob_thresholds=(0.0, 1.0),
+    power=2,
+    best_k=None,
+    miss_weighted=False,
+):
     """
 
      Parameters
      ----------
+
      best_k
      improve_threshold
      y_true : pd.Series
@@ -564,7 +595,8 @@ def relative_brier_score(
      normalize : float | "correct"
      Criteria for which skill scores to include in score calculation.
      power
-
+     miss_weighted : bool
+     If True, multiplies squared different by the "miss"  (1 - y_prior, error of the best prediction) for each compound.
      Returns
      -------
     rel_brier_score : float
@@ -576,7 +608,10 @@ def relative_brier_score(
     Index of samples used to calculate score.
     """
     y_proba_correct = correct_class_probs(y_true, y_proba)
-    y_prior_correct = correct_class_probs(y_true, y_prior)
+    if y_prior is None:
+        y_prior_correct = pd.Series(1 / y_true.nunique(), index=y_proba_correct.index)
+    else:
+        y_prior_correct = correct_class_probs(y_true, y_prior)
     y_proba_thresh = y_proba_correct[
         (y_proba_correct > prob_thresholds[0]) & (y_proba_correct < prob_thresholds[1])
     ]
@@ -587,7 +622,11 @@ def relative_brier_score(
         proba_diff > improve_threshold[0]  # & (proba_diff < improve_threshold[1])
     ]
     proba_power = proba_diff_thresh.pow(power)
-    if class_weight == "balanced":
+    if miss_weighted:
+        proba_power = proba_power * (1 - y_prior_thresh[proba_power.index])
+    if class_weight is None:
+        class_wts = pd.Series(1, index=proba_diff_thresh)
+    elif class_weight == "balanced":
         class_wts = pd.Series(
             compute_sample_weight(class_weight="balanced", y=y_true), index=y_true.index
         )[proba_diff_thresh.index]
@@ -599,7 +638,7 @@ def relative_brier_score(
         if sample_weight is not None and sample_weight.sum() > 0:
             combo_weight = sample_weight * class_wts
         else:
-            combo_weight = class_weight
+            combo_weight = class_wts
     else:
         if sample_weight is not None and sample_weight.sum() > 0:
             combo_weight = sample_weight
@@ -613,19 +652,22 @@ def relative_brier_score(
             n_best = int(min(best_k, balanced_brier.shape[0]))
     else:
         n_best = -1
+    k = min(n_best, balanced_brier.shape[0])
     if combo_weight is not None and combo_weight.sum() > 0:
         weighted_brier = combo_weight.loc[balanced_brier.index] * balanced_brier
-        best_brier = weighted_brier.sort_values(ascending=False).iloc[
-            : min(n_best, weighted_brier.shape[0])
-        ]
-        normalized = best_brier.sum() / combo_weight.loc[best_brier.index]
+        best_brier = weighted_brier.sort_values(ascending=False).iloc[:k]
+        normalized = best_brier.sum() / combo_weight.loc[best_brier.index].sum()
     else:
-        normalized = balanced_brier.sort_values(ascending=False)[:n_best].sum() / n_best
+        normalized = balanced_brier.sort_values(ascending=False)[:n_best].sum() / k
     # Where 2r - r^2 is quadratic "scoring".
     sample_prop = proba_diff_thresh.shape[0] / y_true.shape[0]
-    score = normalized / np.sqrt(sample_prop)
-    score_samples = proba_diff_thresh.index.to_series()
-    print("{} improvements in probability for score of {}.".format(best_brier, score))
+    score = normalized  # / np.sqrt(sample_prop)
+    score_samples = best_brier.index.to_series()
+    print(
+        "\n{} improvements in probability out of {} samples for score of {}.".format(
+            k, y_proba.shape[0], score
+        )
+    )
     return score, score_samples
 
 
