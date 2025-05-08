@@ -4,6 +4,20 @@ from sklearn.utils import check_X_y as checker
 from data.element_lists import DISALLOWED, WITH_SALTS
 
 
+def duplicate_connect(inchi_key_list):
+    first_blocks, clashes = dict(), list()
+    for k in inchi_key_list:
+        f = k.split(sep="-")[0]
+        if f in first_blocks.keys():
+            first_blocks[f].append(k)
+        else:
+            first_blocks[f] = list([k])
+    for k, v in first_blocks.items():
+        if len(v) > 1:
+            clashes.append(v)
+    return clashes
+
+
 def qsar_readiness(smiles_list, allow_salts=True):
     not_ready, ready = list(), list()
     if allow_salts:
