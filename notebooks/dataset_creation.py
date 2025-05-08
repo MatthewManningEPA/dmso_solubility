@@ -208,44 +208,11 @@ def load_new_dmso_data(data_dir, dataset, select_params):
 
 def combine_enamine_new_epa_data(frac_enamine, select_params, path_dict, rus=False):
     if frac_enamine < 1.0:
-        epa_padel_df = _get_new_epa_padel()
-        print(epa_padel_df.shape)
-        epa_padel_df.dropna(inplace=True)
-        print(epa_padel_df.shape)
-        # epa_train_labels, epa_test_labels = _get_new_epa_data_split()
-        epa_train_idx = pd.read_pickle(
-            "{}new_epa_data/prepped_train_labels.pkl".format(
-                os.environ.get("MODEL_DIR")
-            )
+        sol_threshold = 9.9
+        epa_raw_train_df, epa_train_labels, epa_raw_test_df, epa_test_labels = (
+            get_epa_train_test()
         )
-        epa_test_idx = pd.read_pickle(
-            "{}new_epa_data/prepped_test_labels.pkl".format(os.environ.get("MODEL_DIR"))
-        )
-        epa_raw_labels = pd.read_csv(
-            "{}new_epa_data/epa_max_conc_cleaned.csv".format(
-                os.environ.get("MODEL_DIR")
-            ),
-            index_col=0,
-        ).squeeze()
-        threshold_labels = epa_raw_labels.where(cond=lambda x: x < 9.9, other=0).where(
-            cond=lambda x: x >= 9.9, other=1
-        )
-        pprint.pp(threshold_labels)
-        epa_train_labels = threshold_labels.loc[epa_train_idx.index].copy()
-        epa_test_labels = threshold_labels.loc[epa_test_idx.index].copy()
-        epa_raw_train_df = epa_padel_df.loc[epa_train_labels.index].copy()
-        epa_raw_test_df = epa_padel_df.loc[epa_test_labels.index].copy()
-        """
-        (epa_raw_train_df, epa_train_labels, epa_raw_test_df, epa_test_labels, _, _) = (
-            _get_solubility_data(
-                path_dict,
-                select_params,
-                conc_splits=(9.9),
-                preprocess=False,
-                from_disk=False,
-                save_results=False,
-            )
-        )"""
+
     if frac_enamine > 0.0:
         # loaded_data = _get_prepped_enamine(select_params, path_dict)
         # if loaded_data is None:
@@ -287,8 +254,9 @@ def combine_enamine_new_epa_data(frac_enamine, select_params, path_dict, rus=Fal
             print("Overlap between Enamine and EPA data:")
             pprint.pp(df_overlap)
             enamine_df.drop(index=df_overlap, inplace=True)
+            enamine_labels.drop(index=df_overlap, inplace=True)
         if rus:
-            pprint.pp(enamine_df)
+            print("Problematic column names:")
             pprint.pp([c for c in enamine_df.columns if not isinstance(c, str)])
             full_df, full_labels = RandomUnderSampler(random_state=0).fit_resample(
                 X=enamine_df, y=enamine_labels.squeeze()
@@ -307,8 +275,6 @@ def combine_enamine_new_epa_data(frac_enamine, select_params, path_dict, rus=Fal
         random_state=0,
         stratify=full_labels,
     )
-    pprint.pp(enamine_train_df)
-    pprint.pp(enamine_train_labels)
     """
     print(enamine_train_df.index.intersection(epa_raw_train_df.index))
     print(enamine_train_df.index.symmetric_difference(epa_raw_train_df.index))
@@ -584,10 +550,31 @@ def _get_new_epa_padel():
     raw_df = pd.read_pickle(
         "{}new_epa_data/desc_api_out.pkl".format(os.environ.get("MODEL_DIR"))
     )
-    print("EPA Data Output: {}".format(raw_df.shape))
     no_na_df = raw_df.dropna(axis=1)
-    print("EPA Data Output: {}".format(no_na_df.shape))
     return no_na_df
+
+
+def get_epa_train_test(sol_threshold=9.9):
+    epa_padel_df = _get_new_epa_padel()
+    epa_train_idx = pd.read_pickle(
+        "{}new_epa_data/prepped_train_labels.pkl".format(os.environ.get("MODEL_DIR"))
+    )
+    epa_test_idx = pd.read_pickle(
+        "{}new_epa_data/prepped_test_labels.pkl".format(os.environ.get("MODEL_DIR"))
+    )
+    epa_raw_labels = pd.read_csv(
+        "{}new_epa_data/epa_max_conc_cleaned.csv".format(os.environ.get("MODEL_DIR")),
+        index_col=0,
+    ).squeeze()
+
+    threshold_labels = epa_raw_labels.where(
+        cond=lambda x: x < sol_threshold, other=0
+    ).where(cond=lambda x: x >= sol_threshold, other=1)
+    epa_train_labels = threshold_labels.loc[epa_train_idx.index].copy()
+    epa_test_labels = threshold_labels.loc[epa_test_idx.index].copy()
+    epa_raw_train_df = epa_padel_df.loc[epa_train_labels.index].copy()
+    epa_raw_test_df = epa_padel_df.loc[epa_test_labels.index].copy()
+    return epa_raw_train_df, epa_train_labels, epa_raw_test_df, epa_test_labels
 
 
 def _get_new_epa_data_split():
