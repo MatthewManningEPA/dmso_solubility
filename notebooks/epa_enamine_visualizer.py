@@ -345,7 +345,7 @@ def plot_clf_model_displays(
         det.figure_.savefig("{}DetCurve_{}.png".format(subset_dir, estimator_name))
     if is_classifier(estimator):
         cmd_fig, cmd_ax = plt.subplots()
-        if preds is None and frozen:
+        if preds is None or frozen:
             preds = cross_val_predict(
                 estimator=estimator,
                 X=train_df,
@@ -355,6 +355,7 @@ def plot_clf_model_displays(
                 method="predict",
                 params={"sample_weight": sample_weight},
             )
+        if isinstance(preds, (pd.Series, np.ndarray)):
             cmd = ConfusionMatrixDisplay.from_predictions(
                 y_true=train_labels,
                 y_pred=preds,
@@ -377,6 +378,8 @@ def plot_clf_model_displays(
             cmd_fig.savefig(
                 "{}confusion_matrix_{}.png".format(subset_dir, estimator_name)
             )
+    else:
+        cmd = None
     if not frozen:
         lcd = LearningCurveDisplay.from_estimator(
             estimator=clone(estimator),
@@ -595,14 +598,18 @@ def plot_models(
         zip(estimator_list, best_features_list, sample_weight_list)
     ):
         submodel_name = "{}_{}".format(estimator_name, i)
-        if preds_list is not None:
-            preds = pd.concat(preds_list[i])
-        else:
+        if preds_list is None or len(preds_list) == 0 or preds_list[i] is None:
             preds = None
-        if probs_list is not None:
-            probs = pd.concat(probs_list[i])
+        elif isinstance(preds_list[i], (pd.Series, pd.DataFrame)):
+            preds = preds_list[i]
         else:
+            preds = pd.concat(preds_list[i])
+        if probs_list is None or len(probs_list) == 0 or len(probs_list[i]) == 0:
             probs = None
+        elif isinstance(probs_list[i], (pd.Series, pd.DataFrame)):
+            probs = probs_list[i]
+        else:
+            probs = pd.concat(probs_list[i])
         plots = plot_clf_model_displays(
             estimator=estimator,
             estimator_name=submodel_name,
