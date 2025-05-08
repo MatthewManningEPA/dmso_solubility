@@ -655,7 +655,7 @@ class FuzzyAnnealer:
                 # print("Other probs")
                 # print(other_probs)
                 for prior in other_probs:
-                    rel_brier_score, brier_obs = scoring.relative_brier_score(
+                    rel_brier_score, brier_obs = scoring.score_weighted_brier(
                         y_true=self.labels,
                         y_proba=results,
                         y_prior=prior,
@@ -1125,7 +1125,7 @@ class FuzzyAnnealer:
     def freeze_best(self):
         best_fit_model = fit_weighted(
             estimator=self.models["predict"],
-            X=self.feature_df,
+            X=self.feature_df[list(self.best_subset)],
             y=self.labels,
             weights=self.sample_weight,
         )
@@ -1134,20 +1134,34 @@ class FuzzyAnnealer:
             pickle.dump(frozen_model, f)
         return best_fit_model
 
-    def freeze_cv_best(self, cv):
+    def freeze_cv_best(self, model="best"):
+        if model == "best":
+            if self.best_model is None:
+                model = self.freeze_best()
+            else:
+                model = self.best_model
         model_tuples = list()
         for train_X, train_y, test_X, test_y in cv_tools.split_df(
-            self.feature_df, self.labels
+            self.feature_df[list(self.best_subset)], self.labels
         ):
-            trained = fit_weighted(
-                clone(self.models["predict"]),
+            trained_model = fit_weighted(
+                clone(model),
                 X=train_X,
                 y=train_y,
                 weights=self.sample_weight[train_y.index],
             )
-            y_pred = pd.Series(trained.predict(X=test_X), index=test_X.index)
-            y_prob = pd.DataFrame(trained.predict_proba(X=test_X), index=test_X.index)
-            model_tuples.append((trained, test_y.copy(), y_pred, y_prob))
+            y_pred = pd.Series(trained_model.predict(X=test_X), index=test_X.index)
+            y_prob = pd.DataFrame(
+                trained_model.predict_proba(X=test_X), index=test_X.index
+            )
+            model_tuples.append(
+                (
+                    FrozenEstimator(trained_model),
+                    test_y.copy(),
+                    y_pred.copy(),
+                    y_prob.copy(),
+                )
+            )
         return model_tuples
 
     def current_best_ratio(self):
