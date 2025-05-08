@@ -247,7 +247,7 @@ def get_standardizer(comlist, input_type="smiles"):
             if isinstance(response.json(), list) and len(response.json()) > 0:
                 response_list.append(response.json()[0])
             else:  # isinstance(response, (list, str)):
-                failed_list.append(response.content)
+                failed_list.append((c, response.content))
     clean_list = [x for x in response_list if "sid" in x.keys()]
     unregistered_list = [
         x for x in response_list if "sid" not in x.keys() and "smiles" in x.keys()
@@ -255,9 +255,13 @@ def get_standardizer(comlist, input_type="smiles"):
     # failed_list = [x for x in response_list if "smiles" not in x.keys()]
     clean_df = pd.json_normalize(clean_list)
     unregistered_df = pd.json_normalize(unregistered_list)
-    response_df = pd.concat([clean_df, unregistered_df], ignore_index=True)
+    response_df = pd.json_normalize([a for a in response_list if "smiles" in a.keys()])
+    if response_df.empty:
+        response_df = pd.concat([clean_df, unregistered_df], ignore_index=True)
     api_response = response_df.drop(columns="mol")
-    failed_df = pd.json_normalize(failed_list)
+    # failed_df = pd.concat([pd.json_normalize(f) for f in failed_list])
+    # failed_df = pd.DataFrame.from_records(failed_list)
+    failed_df = pd.Series(failed_list)
     return api_response, failed_df
 
 
